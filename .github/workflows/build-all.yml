@@ -54,7 +54,7 @@ jobs:
       - name: Create DMG
         run: |
           mkdir -p dmg_content
-          cp -R "build/macos/Build/Products/Release/flutter_dm.app" "dmg_content/HI-DM.app"
+          cp -R "build/macos/Build/Products/Release/HI-DM.app" "dmg_content/HI-DM.app"
           ln -s /Applications dmg_content/Applications
           hdiutil create -volname "HI-DM" -srcfolder dmg_content -ov -format UDZO "HI-DM.dmg"
 
