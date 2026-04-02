@@ -51,20 +51,22 @@ class SegmentManager {
   SegmentManager(this._dio);
 
   /// Analyze URL to determine file info, range support, and final URL after redirects.
-  /// Tries HEAD first, falls back to GET probe if HEAD fails.
+  /// First resolves all redirects manually, then probes the final URL.
   Future<UrlAnalysis> analyzeUrl(
     String url, {
     Map<String, String> headers = const {},
     int timeoutSeconds = 30,
   }) async {
-    // Try HEAD first (fast, no body download)
+    // Step 1: Resolve all redirects manually to find the real download URL
+    final resolvedUrl = await _resolveRedirects(url, headers: headers, timeoutSeconds: timeoutSeconds);
+
+    // Step 2: Try HEAD on the resolved URL
     try {
       final response = await _dio.head<void>(
-        url,
+        resolvedUrl,
         options: Options(
           headers: headers,
-          followRedirects: true,
-          maxRedirects: 10,
+          followRedirects: false, // Already resolved
           receiveTimeout: Duration(seconds: timeoutSeconds),
           sendTimeout: Duration(seconds: timeoutSeconds),
         ),
@@ -75,9 +77,6 @@ class SegmentManager {
         responseHeaders[name] = values.join(', ');
       });
 
-      // Get resolved URL from redirect chain
-      final resolvedUrl = response.realUri.toString();
-
       return UrlAnalysis(
         contentLength: _parseContentLength(response.headers),
         supportsRange: _checkRangeSupport(response.headers),
@@ -87,9 +86,80 @@ class SegmentManager {
         responseHeaders: responseHeaders,
       );
     } catch (_) {
-      // HEAD failed (405, timeout, redirect issue, etc.) — try GET probe
-      return _probeWithGet(url, headers: headers, timeoutSeconds: timeoutSeconds);
+      // HEAD failed — try GET probe on resolved URL
+      return _probeWithGet(resolvedUrl, headers: headers, timeoutSeconds: timeoutSeconds);
     }
+  }
+
+  /// Manually follow all redirects (301/302/303/307/308) up to 30 hops.
+  /// This handles cases where Dio's built-in followRedirects misses some.
+  Future<String> _resolveRedirects(
+    String url, {
+    Map<String, String> headers = const {},
+    int timeoutSeconds = 30,
+    int maxHops = 30,
+  }) async {
+    var currentUrl = url;
+
+    for (var i = 0; i < maxHops; i++) {
+      try {
+        final response = await _dio.get<void>(
+          currentUrl,
+          options: Options(
+            headers: headers,
+            followRedirects: false, // Handle manually
+            validateStatus: (status) => status != null && status < 400 || status == 301 || status == 302 || status == 303 || status == 307 || status == 308,
+            receiveTimeout: Duration(seconds: timeoutSeconds),
+            sendTimeout: Duration(seconds: timeoutSeconds),
+            responseType: ResponseType.stream,
+          ),
+        );
+
+        // Close stream immediately — we only want headers
+        try {
+          final body = response.data as ResponseBody?;
+          await body?.stream.drain<void>();
+        } catch (_) {}
+
+        final statusCode = response.statusCode ?? 200;
+
+        // Check if it's a redirect
+        if (statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 || statusCode == 308) {
+          final location = response.headers.value('location');
+          if (location == null || location.isEmpty) break;
+
+          // Resolve relative URLs
+          final baseUri = Uri.parse(currentUrl);
+          currentUrl = baseUri.resolve(location).toString();
+          continue;
+        }
+
+        // Not a redirect — check realUri (Dio might have followed some)
+        if (response.realUri.toString() != currentUrl) {
+          currentUrl = response.realUri.toString();
+        }
+
+        break; // Final URL found
+      } on DioException catch (e) {
+        // If we get a redirect in the error, follow it
+        if (e.response != null) {
+          final statusCode = e.response!.statusCode ?? 0;
+          if (statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 || statusCode == 308) {
+            final location = e.response!.headers.value('location');
+            if (location != null && location.isNotEmpty) {
+              final baseUri = Uri.parse(currentUrl);
+              currentUrl = baseUri.resolve(location).toString();
+              continue;
+            }
+          }
+        }
+        break; // Can't resolve further
+      } catch (_) {
+        break;
+      }
+    }
+
+    return currentUrl;
   }
 
   /// Probe URL with a GET range request if HEAD is not supported.
