@@ -79,7 +79,7 @@ class DownloadManager {
     if (_maxConcurrent <= 0) _maxConcurrent = AppConstants.defaultMaxConcurrentDownloads;
 
     final tempDir = await getTemporaryDirectory();
-    _tempDirectory = '${tempDir.path}/flutter_dm';
+    _tempDirectory = '${tempDir.path}/hi-dm';
     _initialized = true;
   }
 

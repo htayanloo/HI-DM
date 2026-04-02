@@ -7,6 +7,6 @@ void main() {
     await tester.pumpWidget(
       const ProviderScope(child: HiDMApp()),
     );
-    expect(find.text('FlutterDM v1.0.0'), findsOneWidget);
+    expect(find.text('HI-DM v1.0.0'), findsOneWidget);
   });
 }

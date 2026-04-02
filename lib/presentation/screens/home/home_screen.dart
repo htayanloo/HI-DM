@@ -8,6 +8,8 @@ import '../../../core/utils/speed_formatter.dart';
 import '../../../data/models/app_settings.dart';
 import '../../../data/models/download_item.dart';
 import '../../../domain/services/clipboard_monitor.dart';
+import '../../../platform/desktop/system_tray.dart';
+import '../../../platform/desktop/window_config.dart';
 import '../../providers/category_providers.dart';
 import '../../providers/download_manager_provider.dart';
 import '../../providers/download_providers.dart';
@@ -34,6 +36,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _sidebarExpanded = true;
   ClipboardMonitor? _clipboardMonitor;
   bool _clipboardDialogShowing = false;
+  final _tray = SystemTrayService();
 
   @override
   void initState() {
@@ -41,13 +44,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(downloadManagerProvider).initialize();
       _initClipboardMonitor();
+      _initSystemTray();
     });
   }
 
   @override
   void dispose() {
     _clipboardMonitor?.dispose();
+    _tray.dispose();
     super.dispose();
+  }
+
+  void _initSystemTray() {
+    _tray.onShowWindow = () {
+      // Window will be shown by tray service
+    };
+    _tray.onAddUrl = () => _showAddUrlDialog();
+    _tray.onPauseAll = () => ref.read(downloadManagerProvider).pauseAll();
+    _tray.onResumeAll = () => ref.read(downloadManagerProvider).resumeAll();
+    _tray.onQuit = () => WindowConfig.close();
+    _tray.initialize();
   }
 
   Future<void> _initClipboardMonitor() async {
@@ -645,6 +661,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildStatusBar(BuildContext context, ThemeData theme, int activeCount, double totalSpeed) {
+    // Update system tray with current stats
+    _tray.updateStats(totalSpeed: totalSpeed, activeDownloads: activeCount);
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       decoration: BoxDecoration(

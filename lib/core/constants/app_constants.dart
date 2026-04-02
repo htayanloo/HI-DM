@@ -23,7 +23,7 @@ class AppConstants {
   static const int schedulerCheckInterval = 30; // seconds
 
   // Database
-  static const String databaseName = 'flutter_dm.db';
+  static const String databaseName = 'hi_dm.db';
   static const int databaseVersion = 1;
 
   // Temp file prefix

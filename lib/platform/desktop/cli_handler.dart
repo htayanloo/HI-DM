@@ -24,7 +24,7 @@ class CliHandler {
 HI-DM - Internet Download Manager
 
 Usage:
-  flutter_dm [options]
+  hi-dm [options]
 
 Options:
   --add <URL>        Add a download URL
