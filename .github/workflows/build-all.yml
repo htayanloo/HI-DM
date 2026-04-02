@@ -22,21 +22,17 @@ jobs:
       - run: dart run build_runner build --delete-conflicting-outputs
       - run: flutter build windows --release
 
-      # Create MSI with WiX
-      - name: Install WiX Toolset
-        run: dotnet tool install --global wix
-      - name: Create MSI
+      - name: Create ZIP archive
         run: |
-          wix build packaging/windows/HI-DM.wxs -o HI-DM-Setup.msi
+          cd build/windows/x64/runner/Release
+          7z a -tzip ../../../../../HI-DM-Windows.zip *
         shell: cmd
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: |
-            build/windows/x64/runner/Release/
-            HI-DM-Setup.msi
+          path: HI-DM-Windows.zip
 
   build-macos:
     runs-on: macos-latest
@@ -50,7 +46,6 @@ jobs:
       - run: dart run build_runner build --delete-conflicting-outputs
       - run: flutter build macos --release
 
-      # Create DMG
       - name: Create DMG
         run: |
           mkdir -p dmg_content
@@ -80,37 +75,31 @@ jobs:
       - run: dart run build_runner build --delete-conflicting-outputs
       - run: flutter build linux --release
 
-      # Create DEB package
       - name: Build DEB
         run: |
-          mkdir -p packaging/deb/hi-dm/DEBIAN
-          mkdir -p packaging/deb/hi-dm/usr/bin
-          mkdir -p packaging/deb/hi-dm/usr/lib/hi-dm
-          mkdir -p packaging/deb/hi-dm/usr/share/applications
-          mkdir -p packaging/deb/hi-dm/usr/share/icons/hicolor/256x256/apps
-
-          cp -r build/linux/x64/release/bundle/* packaging/deb/hi-dm/usr/lib/hi-dm/
-
-          cat > packaging/deb/hi-dm/usr/bin/hi-dm << 'SCRIPT'
-          #!/bin/bash
-          exec /usr/lib/hi-dm/flutter_dm "$@"
-          SCRIPT
-          chmod +x packaging/deb/hi-dm/usr/bin/hi-dm
-
-          cat > packaging/deb/hi-dm/DEBIAN/control << 'CTRL'
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
+          mkdir -p pkg/DEBIAN
+          mkdir -p pkg/usr/bin
+          mkdir -p pkg/usr/lib/hi-dm
+          mkdir -p pkg/usr/share/applications
+          mkdir -p pkg/usr/share/icons/hicolor/256x256/apps
+          cp -r build/linux/x64/release/bundle/* pkg/usr/lib/hi-dm/
+          cp assets/icons/hi-dm-logo.png pkg/usr/share/icons/hicolor/256x256/apps/hi-dm.png || true
+          printf '#!/bin/bash\nexec /usr/lib/hi-dm/flutter_dm "$@"\n' > pkg/usr/bin/hi-dm
+          chmod +x pkg/usr/bin/hi-dm
+          cat > pkg/DEBIAN/control << EOF
           Package: hi-dm
-          Version: 1.0.0
+          Version: ${VERSION}
           Section: net
           Priority: optional
           Architecture: amd64
           Depends: libgtk-3-0, libsqlite3-0
-          Maintainer: HI-DM Team <hi-dm@example.com>
+          Maintainer: HI-DM <hi-dm@example.com>
           Description: HI-DM - Internet Download Manager
-           A full-featured download manager with multi-threaded downloading,
-           resume capability, queue management, and site grabber.
-          CTRL
-
-          cat > packaging/deb/hi-dm/usr/share/applications/hi-dm.desktop << 'DESKTOP'
+           Multi-threaded download manager with resume, queues, and site grabber.
+          EOF
+          sed -i 's/^          //' pkg/DEBIAN/control
+          cat > pkg/usr/share/applications/hi-dm.desktop << EOF
           [Desktop Entry]
           Type=Application
           Name=HI-DM
@@ -119,50 +108,54 @@ jobs:
           Icon=hi-dm
           Categories=Network;FileTransfer;
           Keywords=download;manager;
-          DESKTOP
+          EOF
+          sed -i 's/^          //' pkg/usr/share/applications/hi-dm.desktop
+          dpkg-deb --build pkg "hi-dm_${VERSION}_amd64.deb"
 
-          dpkg-deb --build packaging/deb/hi-dm hi-dm_1.0.0_amd64.deb
-
-      # Create RPM package
       - name: Build RPM
         run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
           mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-
-          # Create tarball
-          mkdir -p /tmp/hi-dm-1.0.0/usr/lib/hi-dm
-          mkdir -p /tmp/hi-dm-1.0.0/usr/bin
-          mkdir -p /tmp/hi-dm-1.0.0/usr/share/applications
-          cp -r build/linux/x64/release/bundle/* /tmp/hi-dm-1.0.0/usr/lib/hi-dm/
-          cp packaging/deb/hi-dm/usr/bin/hi-dm /tmp/hi-dm-1.0.0/usr/bin/
-          cp packaging/deb/hi-dm/usr/share/applications/hi-dm.desktop /tmp/hi-dm-1.0.0/usr/share/applications/
-
-          tar czf ~/rpmbuild/SOURCES/hi-dm-1.0.0.tar.gz -C /tmp hi-dm-1.0.0
+          mkdir -p /tmp/hi-dm-${VERSION}/usr/lib/hi-dm
+          mkdir -p /tmp/hi-dm-${VERSION}/usr/bin
+          mkdir -p /tmp/hi-dm-${VERSION}/usr/share/applications
+          cp -r build/linux/x64/release/bundle/* /tmp/hi-dm-${VERSION}/usr/lib/hi-dm/
+          cp pkg/usr/bin/hi-dm /tmp/hi-dm-${VERSION}/usr/bin/
+          cp pkg/usr/share/applications/hi-dm.desktop /tmp/hi-dm-${VERSION}/usr/share/applications/
+          tar czf ~/rpmbuild/SOURCES/hi-dm-${VERSION}.tar.gz -C /tmp hi-dm-${VERSION}
           cp packaging/rpm/hi-dm.spec ~/rpmbuild/SPECS/
-          rpmbuild -bb ~/rpmbuild/SPECS/hi-dm.spec
-          cp ~/rpmbuild/RPMS/x86_64/*.rpm ./hi-dm-1.0.0.x86_64.rpm || true
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" ~/rpmbuild/SPECS/hi-dm.spec
+          rpmbuild -bb ~/rpmbuild/SPECS/hi-dm.spec || true
+          cp ~/rpmbuild/RPMS/x86_64/*.rpm ./hi-dm-${VERSION}.x86_64.rpm || true
 
-      # Create AppImage
       - name: Build AppImage
         run: |
           mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
           cp -r build/linux/x64/release/bundle/* AppDir/usr/lib/
-          cp packaging/deb/hi-dm/usr/bin/hi-dm AppDir/usr/bin/
-          ln -sf usr/bin/hi-dm AppDir/AppRun
-          cp packaging/deb/hi-dm/usr/share/applications/hi-dm.desktop AppDir/
-
-          # Download appimagetool
+          cp pkg/usr/bin/hi-dm AppDir/usr/bin/
+          cp pkg/usr/share/applications/hi-dm.desktop AppDir/hi-dm.desktop
+          cp assets/icons/hi-dm-logo.png AppDir/hi-dm.png || true
+          cp assets/icons/hi-dm-logo.png AppDir/usr/share/icons/hicolor/256x256/apps/hi-dm.png || true
+          printf '#!/bin/bash\nHERE="$(dirname "$(readlink -f "$0")")"\nexec "$HERE/usr/lib/flutter_dm" "$@"\n' > AppDir/AppRun
+          chmod +x AppDir/AppRun
           wget -q "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -O appimagetool
           chmod +x appimagetool
           ARCH=x86_64 ./appimagetool AppDir HI-DM-x86_64.AppImage || true
+
+      - name: Build tar.gz bundle
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | sed 's/+.*//')
+          tar czf "HI-DM-${VERSION}-linux-x64.tar.gz" -C build/linux/x64/release/bundle .
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-build
           path: |
-            hi-dm_1.0.0_amd64.deb
-            hi-dm-1.0.0.x86_64.rpm
+            hi-dm_*_amd64.deb
+            hi-dm-*.x86_64.rpm
             HI-DM-x86_64.AppImage
+            HI-DM-*-linux-x64.tar.gz
 
   release:
     needs: [build-windows, build-macos, build-linux]
@@ -172,15 +165,20 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
+      - name: List artifacts
+        run: find . -type f | head -30
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           name: HI-DM ${{ github.ref_name }}
           draft: false
           prerelease: false
+          generate_release_notes: true
           files: |
-            windows-build/HI-DM-Setup.msi
+            windows-build/HI-DM-Windows.zip
             macos-build/HI-DM.dmg
-            linux-build/hi-dm_1.0.0_amd64.deb
-            linux-build/hi-dm-1.0.0.x86_64.rpm
+            linux-build/hi-dm_*_amd64.deb
+            linux-build/hi-dm-*.x86_64.rpm
             linux-build/HI-DM-x86_64.AppImage
+            linux-build/HI-DM-*-linux-x64.tar.gz
