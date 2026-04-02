@@ -149,6 +149,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     showDialog<bool>(context: context, builder: (_) => AddUrlDialog(initialUrl: url));
   }
 
+  Future<void> _redownload(DownloadItem item) async {
+    final manager = ref.read(downloadManagerProvider);
+    await manager.addDownload(
+      url: item.url,
+      savePath: item.savePath,
+      fileName: item.fileName,
+      threadCount: item.threadCount,
+      headers: item.headers,
+      startImmediately: true,
+    );
+  }
+
   Future<void> _openFolder(String path) async {
     try {
       if (Platform.isMacOS) {
@@ -243,6 +255,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const PopupMenuItem(value: 'resume', child: _ContextMenuItem(icon: Icons.play_arrow_rounded, label: 'Resume')),
         if (item.isActive)
           const PopupMenuItem(value: 'pause', child: _ContextMenuItem(icon: Icons.pause_rounded, label: 'Pause')),
+        if (item.status == 'completed' || item.status == 'error')
+          const PopupMenuItem(value: 'redownload', child: _ContextMenuItem(icon: Icons.refresh_rounded, label: 'Download Again')),
         const PopupMenuItem(value: 'delete', child: _ContextMenuItem(icon: Icons.delete_outline_rounded, label: 'Delete')),
         const PopupMenuDivider(),
         const PopupMenuItem(value: 'settings', child: _ContextMenuItem(icon: Icons.tune_rounded, label: 'Speed / Connections')),
@@ -273,6 +287,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           }
         case 'openFolder':
           _openFolder(item.savePath);
+        case 'redownload':
+          _redownload(item);
       }
     });
   }
