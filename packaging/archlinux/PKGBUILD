@@ -1,0 +1,47 @@
+# Maintainer: HI-DM Team <hi-dm@example.com>
+pkgname=hi-dm
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="HI-DM - Internet Download Manager with multi-threaded downloading"
+arch=('x86_64')
+url="https://github.com/htayanloo/Hi-DM"
+license=('MIT')
+depends=('gtk3' 'sqlite')
+makedepends=('flutter' 'clang' 'cmake' 'ninja' 'pkg-config')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "Hi-DM-$pkgver"
+  flutter pub get
+  dart run build_runner build --delete-conflicting-outputs
+  flutter build linux --release
+}
+
+package() {
+  cd "Hi-DM-$pkgver"
+
+  # Install app files
+  install -dm755 "$pkgdir/usr/lib/$pkgname"
+  cp -r build/linux/x64/release/bundle/* "$pkgdir/usr/lib/$pkgname/"
+
+  # Install launcher script
+  install -dm755 "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/$pkgname" << 'EOF'
+#!/bin/bash
+exec /usr/lib/hi-dm/flutter_dm "$@"
+EOF
+  chmod +x "$pkgdir/usr/bin/$pkgname"
+
+  # Install desktop file
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/$pkgname.desktop" << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=HI-DM
+Comment=Internet Download Manager
+Exec=hi-dm
+Icon=hi-dm
+Categories=Network;FileTransfer;
+Keywords=download;manager;
+EOF
+}

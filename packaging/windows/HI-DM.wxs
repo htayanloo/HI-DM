@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="HI-DM"
+           Manufacturer="HI-DM Team"
+           Version="1.0.0"
+           UpgradeCode="E8D1F2A3-B4C5-6D7E-8F9A-0B1C2D3E4F5A">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of HI-DM is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="HI-DM">
+        <Component Id="MainExecutable" Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
+          <File Id="FlutterDMExe" Source="build\windows\x64\runner\Release\flutter_dm.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="DLLFiles" Guid="B2C3D4E5-F6A7-8901-BCDE-F12345678901">
+          <File Source="build\windows\x64\runner\Release\flutter_windows.dll" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="C3D4E5F6-A7B8-9012-CDEF-123456789012">
+        <Shortcut Id="HIDMShortcut"
+                  Name="HI-DM"
+                  Description="Internet Download Manager"
+                  Target="[INSTALLFOLDER]flutter_dm.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\HI-DM" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Complete" Title="HI-DM" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="DLLFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+  </Package>
+</Wix>
