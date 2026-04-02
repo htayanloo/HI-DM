@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
+import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart';
+import 'package:dio_cookie_manager/dio_cookie_manager.dart';
 import 'package:path/path.dart' as p;
 
 import 'connection_pool.dart';
@@ -42,6 +44,7 @@ class _IsolateDownloadEngine {
   final SendPort sendPort;
 
   late final Dio _dio;
+  late final CookieJar _cookieJar;
   late final SegmentManager _segmentManager;
   late final FileAssembler _fileAssembler;
   late final SpeedLimiter _speedLimiter;
@@ -58,17 +61,20 @@ class _IsolateDownloadEngine {
   int _totalDownloaded = 0;
   int _totalSize = -1;
   bool _supportsRange = false;
+  String? _resolvedUrl; // Final URL after redirects
 
   _IsolateDownloadEngine({
     required this.config,
     required this.sendPort,
   }) {
+    _cookieJar = CookieJar();
     _dio = Dio(BaseOptions(
       connectTimeout: Duration(seconds: config.connectionTimeoutSeconds),
       receiveTimeout: const Duration(minutes: 30),
       followRedirects: true,
       maxRedirects: 10,
     ));
+    _dio.interceptors.add(CookieManager(_cookieJar));
     _segmentManager = SegmentManager(_dio);
     _fileAssembler = FileAssembler(
       tempDirectory: config.tempDirectory,
@@ -94,6 +100,11 @@ class _IsolateDownloadEngine {
 
       _totalSize = analysis.contentLength;
       _supportsRange = analysis.supportsRange;
+      // Use resolved URL (after redirects) for actual download
+      _resolvedUrl = analysis.resolvedUrl ?? config.url;
+      if (_resolvedUrl != config.url) {
+        _sendLog('Redirected to: $_resolvedUrl');
+      }
 
       final fileName = analysis.suggestedFileName ?? config.fileName;
       _sendEvent('fileInfo', {
@@ -260,8 +271,9 @@ class _IsolateDownloadEngine {
     }
 
     _connectionPool = ConnectionPool(
-      url: config.url,
+      url: _resolvedUrl ?? config.url,
       headers: config.headers,
+      cookieJar: _cookieJar,
       connectionTimeoutSeconds: config.connectionTimeoutSeconds,
       maxRetries: config.maxRetries,
       retryDelaySeconds: config.retryDelaySeconds,

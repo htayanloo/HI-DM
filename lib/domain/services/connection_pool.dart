@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart';
+import 'package:dio_cookie_manager/dio_cookie_manager.dart';
 
 import 'speed_limiter.dart';
 
@@ -17,6 +19,7 @@ class ConnectionPool {
   final int maxRetries;
   final int retryDelaySeconds;
   final SpeedLimiter? speedLimiter;
+  final CookieJar? cookieJar;
   final SegmentProgressCallback? onProgress;
   final SegmentStatusCallback? onStatusChange;
 
@@ -34,6 +37,7 @@ class ConnectionPool {
     this.maxRetries = 5,
     this.retryDelaySeconds = 5,
     this.speedLimiter,
+    this.cookieJar,
     this.onProgress,
     this.onStatusChange,
   });
@@ -229,13 +233,17 @@ class ConnectionPool {
   }
 
   Dio _createDio() {
-    return Dio(BaseOptions(
+    final dio = Dio(BaseOptions(
       connectTimeout: Duration(seconds: connectionTimeoutSeconds),
       receiveTimeout: const Duration(minutes: 30),
       sendTimeout: Duration(seconds: connectionTimeoutSeconds),
       followRedirects: true,
       maxRedirects: 10,
     ));
+    if (cookieJar != null) {
+      dio.interceptors.add(CookieManager(cookieJar!));
+    }
+    return dio;
   }
 
   void dispose() {

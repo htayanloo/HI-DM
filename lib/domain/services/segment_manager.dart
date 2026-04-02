@@ -10,6 +10,7 @@ class UrlAnalysis {
   final bool supportsRange;
   final String? suggestedFileName;
   final String? mimeType;
+  final String? resolvedUrl; // Final URL after redirects
   final Map<String, String> responseHeaders;
 
   const UrlAnalysis({
@@ -17,6 +18,7 @@ class UrlAnalysis {
     required this.supportsRange,
     this.suggestedFileName,
     this.mimeType,
+    this.resolvedUrl,
     this.responseHeaders = const {},
   });
 }
@@ -48,12 +50,14 @@ class SegmentManager {
 
   SegmentManager(this._dio);
 
-  /// Analyze URL via HEAD request to determine file info and range support.
+  /// Analyze URL to determine file info, range support, and final URL after redirects.
+  /// Tries HEAD first, falls back to GET probe if HEAD fails.
   Future<UrlAnalysis> analyzeUrl(
     String url, {
     Map<String, String> headers = const {},
     int timeoutSeconds = 30,
   }) async {
+    // Try HEAD first (fast, no body download)
     try {
       final response = await _dio.head<void>(
         url,
@@ -71,24 +75,20 @@ class SegmentManager {
         responseHeaders[name] = values.join(', ');
       });
 
-      final contentLength = _parseContentLength(response.headers);
-      final supportsRange = _checkRangeSupport(response.headers);
-      final suggestedFileName = _extractFileName(response.headers, url);
-      final mimeType = response.headers.value('content-type');
+      // Get resolved URL from redirect chain
+      final resolvedUrl = response.realUri.toString();
 
       return UrlAnalysis(
-        contentLength: contentLength,
-        supportsRange: supportsRange,
-        suggestedFileName: suggestedFileName,
-        mimeType: mimeType,
+        contentLength: _parseContentLength(response.headers),
+        supportsRange: _checkRangeSupport(response.headers),
+        suggestedFileName: _extractFileName(response.headers, resolvedUrl),
+        mimeType: response.headers.value('content-type'),
+        resolvedUrl: resolvedUrl,
         responseHeaders: responseHeaders,
       );
-    } on DioException catch (e) {
-      // If HEAD fails, try a GET with range 0-0 to probe
-      if (e.type == DioExceptionType.badResponse) {
-        return _probeWithGet(url, headers: headers, timeoutSeconds: timeoutSeconds);
-      }
-      rethrow;
+    } catch (_) {
+      // HEAD failed (405, timeout, redirect issue, etc.) — try GET probe
+      return _probeWithGet(url, headers: headers, timeoutSeconds: timeoutSeconds);
     }
   }
 
@@ -139,11 +139,14 @@ class SegmentManager {
       contentLength = _parseContentLength(response.headers);
     }
 
+    final resolvedUrl = response.realUri.toString();
+
     return UrlAnalysis(
       contentLength: contentLength,
       supportsRange: supportsRange,
-      suggestedFileName: _extractFileName(response.headers, url),
+      suggestedFileName: _extractFileName(response.headers, resolvedUrl),
       mimeType: response.headers.value('content-type'),
+      resolvedUrl: resolvedUrl,
       responseHeaders: responseHeaders,
     );
   }

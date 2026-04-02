@@ -1,6 +1,6 @@
 class AppConstants {
   static const String appName = 'HI-DM';
-  static const String appVersion = '1.2.0';
+  static const String appVersion = '1.3.0';
 
   // Download defaults
   static const int defaultThreadCount = 8;
