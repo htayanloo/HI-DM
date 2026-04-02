@@ -61,8 +61,8 @@ Future<void> main() async {
 
 Future<void> _seedDefaults(ProviderContainer container) async {
   final db = container.read(databaseProvider);
-  final docsDir = await getApplicationDocumentsDirectory();
-  final basePath = '${docsDir.path}/HI-DM';
+  final home = Platform.environment['HOME'] ?? '/tmp';
+  final basePath = '$home/Downloads/HI-DM';
 
   final categoryRepo = CategoryRepository(db);
   await categoryRepo.seedDefaults(basePath);
@@ -73,12 +73,14 @@ Future<void> _seedDefaults(ProviderContainer container) async {
   final settingsRepo = SettingsRepository(db);
   await settingsRepo.seedDefaults();
 
-  // Set default save path to ~/Downloads/HI-DM if not already set
+  // Set default save path to ~/Downloads/HI-DM
   try {
     final currentSavePath = await settingsRepo.getValue(AppSettings.defaultSavePath);
-    if (currentSavePath.isEmpty) {
-      final home = Platform.environment['HOME'] ?? docsDir.path;
-      final downloadsDir = '$home/Downloads/HI-DM';
+    final home = Platform.environment['HOME'] ?? '/tmp';
+    final downloadsDir = '$home/Downloads/HI-DM';
+
+    // Fix: if saved path is empty or inside sandbox container, reset to real Downloads
+    if (currentSavePath.isEmpty || currentSavePath.contains('/Containers/')) {
       await Directory(downloadsDir).create(recursive: true);
       await settingsRepo.setValue(AppSettings.defaultSavePath, downloadsDir);
     }

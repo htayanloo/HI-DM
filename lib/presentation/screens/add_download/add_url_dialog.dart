@@ -102,23 +102,34 @@ class _AddUrlDialogState extends ConsumerState<AddUrlDialog> {
     });
 
     try {
-      final dio = Dio();
+      final dio = Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
+        followRedirects: true,
+        maxRedirects: 20,
+      ));
       final manager = SegmentManager(dio);
       final analysis = await manager.analyzeUrl(url);
 
       if (!mounted) return;
 
+      // Use resolved URL to extract better filename
+      final resolvedUrl = analysis.resolvedUrl ?? url;
+      var fileName = analysis.suggestedFileName;
+      fileName ??= FileUtils.getFileNameFromUrl(resolvedUrl);
+      // If still no extension, try original URL (might have format= in query)
+      if (!fileName.contains('.')) {
+        fileName = FileUtils.getFileNameFromUrl(url);
+      }
+
       setState(() {
         _fileSize = analysis.contentLength;
         _supportsRange = analysis.supportsRange;
         _isAnalyzing = false;
-
-        if (analysis.suggestedFileName != null) {
-          _fileNameController.text = analysis.suggestedFileName!;
-        } else {
-          _fileNameController.text = FileUtils.getFileNameFromUrl(url);
-        }
+        _fileNameController.text = fileName!;
       });
+
+      dio.close();
 
       // Auto-detect category and set its save path
       final categories = ref.read(allCategoriesProvider).valueOrNull ?? [];
@@ -134,8 +145,6 @@ class _AddUrlDialogState extends ConsumerState<AddUrlDialog> {
           break;
         }
       }
-
-      dio.close();
     } catch (e) {
       if (!mounted) return;
       setState(() {
