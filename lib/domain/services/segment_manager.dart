@@ -92,7 +92,8 @@ class SegmentManager {
   }
 
   /// Manually follow all redirects (301/302/303/307/308) up to 30 hops.
-  /// This handles cases where Dio's built-in followRedirects misses some.
+  /// Uses HEAD requests to avoid downloading file content during resolution.
+  /// Falls back to GET with immediate cancellation if HEAD fails.
   Future<String> _resolveRedirects(
     String url, {
     Map<String, String> headers = const {},
@@ -103,28 +104,17 @@ class SegmentManager {
 
     for (var i = 0; i < maxHops; i++) {
       try {
-        final response = await _dio.get<void>(
+        // Try HEAD first — no body to download
+        final response = await _headForRedirect(
           currentUrl,
-          options: Options(
-            headers: headers,
-            followRedirects: false, // Handle manually
-            validateStatus: (status) => status != null && status < 400 || status == 301 || status == 302 || status == 303 || status == 307 || status == 308,
-            receiveTimeout: Duration(seconds: timeoutSeconds),
-            sendTimeout: Duration(seconds: timeoutSeconds),
-            responseType: ResponseType.stream,
-          ),
+          headers: headers,
+          timeoutSeconds: timeoutSeconds,
         );
-
-        // Close stream immediately — we only want headers
-        try {
-          final body = response.data as ResponseBody?;
-          await body?.stream.drain<void>();
-        } catch (_) {}
 
         final statusCode = response.statusCode ?? 200;
 
         // Check if it's a redirect
-        if (statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 || statusCode == 308) {
+        if (_isRedirect(statusCode)) {
           final location = response.headers.value('location');
           if (location == null || location.isEmpty) break;
 
@@ -144,7 +134,7 @@ class SegmentManager {
         // If we get a redirect in the error, follow it
         if (e.response != null) {
           final statusCode = e.response!.statusCode ?? 0;
-          if (statusCode == 301 || statusCode == 302 || statusCode == 303 || statusCode == 307 || statusCode == 308) {
+          if (_isRedirect(statusCode)) {
             final location = e.response!.headers.value('location');
             if (location != null && location.isNotEmpty) {
               final baseUri = Uri.parse(currentUrl);
@@ -152,6 +142,16 @@ class SegmentManager {
               continue;
             }
           }
+        }
+        // HEAD failed entirely — try GET with cancel token as fallback
+        final resolved = await _getForRedirectFallback(
+          currentUrl,
+          headers: headers,
+          timeoutSeconds: timeoutSeconds,
+        );
+        if (resolved != null && resolved != currentUrl) {
+          currentUrl = resolved;
+          continue;
         }
         break; // Can't resolve further
       } catch (_) {
@@ -161,6 +161,88 @@ class SegmentManager {
 
     return currentUrl;
   }
+
+  /// HEAD request for redirect resolution — no body downloaded.
+  Future<Response<void>> _headForRedirect(
+    String url, {
+    Map<String, String> headers = const {},
+    int timeoutSeconds = 30,
+  }) {
+    return _dio.head<void>(
+      url,
+      options: Options(
+        headers: headers,
+        followRedirects: false,
+        validateStatus: (status) =>
+            status != null && (status < 400 || _isRedirect(status)),
+        receiveTimeout: Duration(seconds: timeoutSeconds),
+        sendTimeout: Duration(seconds: timeoutSeconds),
+      ),
+    );
+  }
+
+  /// GET fallback for servers that reject HEAD. Uses CancelToken to abort
+  /// immediately after reading headers — never downloads the body.
+  Future<String?> _getForRedirectFallback(
+    String url, {
+    Map<String, String> headers = const {},
+    int timeoutSeconds = 30,
+  }) async {
+    final cancelToken = CancelToken();
+    try {
+      final response = await _dio.get<void>(
+        url,
+        cancelToken: cancelToken,
+        options: Options(
+          headers: headers,
+          followRedirects: false,
+          validateStatus: (status) =>
+              status != null && (status < 400 || _isRedirect(status)),
+          receiveTimeout: Duration(seconds: timeoutSeconds),
+          sendTimeout: Duration(seconds: timeoutSeconds),
+          responseType: ResponseType.stream,
+        ),
+      );
+
+      final statusCode = response.statusCode ?? 200;
+
+      // Cancel immediately — we only need headers
+      cancelToken.cancel('headers received');
+
+      if (_isRedirect(statusCode)) {
+        final location = response.headers.value('location');
+        if (location != null && location.isNotEmpty) {
+          final baseUri = Uri.parse(url);
+          return baseUri.resolve(location).toString();
+        }
+      }
+
+      // Check if Dio followed a redirect
+      final realUri = response.realUri.toString();
+      if (realUri != url) return realUri;
+
+      return url;
+    } on DioException catch (e) {
+      // Cancelled is expected — check if we got redirect info
+      if (e.response != null && _isRedirect(e.response!.statusCode ?? 0)) {
+        final location = e.response!.headers.value('location');
+        if (location != null && location.isNotEmpty) {
+          final baseUri = Uri.parse(url);
+          return baseUri.resolve(location).toString();
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _isRedirect(int statusCode) =>
+      statusCode == 301 ||
+      statusCode == 302 ||
+      statusCode == 303 ||
+      statusCode == 307 ||
+      statusCode == 308;
 
   /// Probe URL with a GET range request if HEAD is not supported.
   Future<UrlAnalysis> _probeWithGet(

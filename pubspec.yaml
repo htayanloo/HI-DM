@@ -1,7 +1,7 @@
 name: flutter_dm
 description: "HI-DM - A full-featured Internet Download Manager clone built with Flutter"
 publish_to: 'none'
-version: 1.4.1+9
+version: 1.4.2+10
 
 environment:
   sdk: ^3.11.0
