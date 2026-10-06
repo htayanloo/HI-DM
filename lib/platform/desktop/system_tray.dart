@@ -2,9 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -20,7 +17,10 @@ class SystemTrayService with TrayListener {
   bool _initialized = false;
   double _currentSpeed = 0;
   int _activeCount = 0;
+  int _queuedCount = 0;
+  int _completedCount = 0;
   Timer? _updateTimer;
+  String _lastTitle = '';
 
   VoidCallback? onShowWindow;
   VoidCallback? onPauseAll;
@@ -35,11 +35,12 @@ class SystemTrayService with TrayListener {
     try {
       trayManager.addListener(this);
 
-      // Extract tray icon from Flutter assets to a temp file
-      // tray_manager needs an absolute file path, not a Flutter asset path
-      final iconPath = await _extractTrayIcon();
+      // tray_manager resolves the icon itself: on macOS it loads the path via
+      // rootBundle, on Windows/Linux it prefixes `data/flutter_assets/`.
+      // So a Flutter asset path (relative to the assets dir) is what works on
+      // every desktop platform — an absolute file path breaks macOS.
+      await trayManager.setIcon('assets/icons/tray_icon.png', isTemplate: false);
 
-      await trayManager.setIcon(iconPath, isTemplate: false);
       // Show title next to icon in menu bar
       if (Platform.isMacOS) {
         await trayManager.setTitle('HI-DM');
@@ -48,54 +49,28 @@ class SystemTrayService with TrayListener {
       await trayManager.setToolTip('HI-DM — Download Manager');
 
       _initialized = true;
-      debugPrint('[Tray] System tray initialized with icon: $iconPath');
+      debugPrint('[Tray] System tray initialized');
     } catch (e) {
       debugPrint('[Tray] Failed to initialize: $e');
     }
   }
 
-  /// Get the tray icon — resolve from app bundle or copy from assets.
-  Future<String> _extractTrayIcon() async {
-    // Method 1: Find icon inside the app bundle (works for macOS release & debug)
-    if (Platform.isMacOS) {
-      final executable = Platform.resolvedExecutable;
-      // Go from .app/Contents/MacOS/hi-dm to .app/Contents/Frameworks/App.framework/...
-      final appDir = File(executable).parent.parent.path;
-      final bundleIcon = File(p.join(
-        appDir, 'Frameworks', 'App.framework', 'Versions', 'A',
-        'Resources', 'flutter_assets', 'assets', 'icons', 'tray_icon.png',
-      ));
-      if (await bundleIcon.exists()) {
-        debugPrint('[Tray] Using bundle icon: ${bundleIcon.path}');
-        return bundleIcon.path;
-      }
-    }
-
-    // Method 2: Copy from project source (debug fallback)
-    final tempDir = await getApplicationSupportDirectory();
-    final iconFile = File(p.join(tempDir.path, 'tray_icon.png'));
-
-    if (!await iconFile.exists()) {
-      // Try project source
-      for (final srcPath in ['assets/icons/tray_icon.png', 'assets/icons/hi-dm-logo.png']) {
-        final src = File(srcPath);
-        if (await src.exists()) {
-          await iconFile.create(recursive: true);
-          await src.copy(iconFile.path);
-          break;
-        }
-      }
-    }
-
-    return iconFile.path;
-  }
-
   /// Update the tray with current download stats.
-  void updateStats({required double totalSpeed, required int activeDownloads}) {
+  ///
+  /// [queuedCount]/[completedCount] enrich the OS status-bar details shown
+  /// while the window is closed/minimized.
+  void updateStats({
+    required double totalSpeed,
+    required int activeDownloads,
+    int queuedCount = 0,
+    int completedCount = 0,
+  }) {
     _currentSpeed = totalSpeed;
     _activeCount = activeDownloads;
+    _queuedCount = queuedCount;
+    _completedCount = completedCount;
 
-    // Throttle menu updates to every 2 seconds
+    // Throttle menu/title updates to every 2 seconds
     _updateTimer ??= Timer(const Duration(seconds: 2), () {
       _updateTimer = null;
       _updateMenu();
@@ -112,6 +87,17 @@ class SystemTrayService with TrayListener {
       final activeText = _activeCount > 0
           ? '$_activeCount active download${_activeCount > 1 ? 's' : ''}'
           : 'No active downloads';
+      final queueText = '$_queuedCount queued • $_completedCount completed';
+
+      // macOS menu bar: show live speed so status is visible even when the
+      // window is closed (top of screen = OS status bar).
+      if (Platform.isMacOS) {
+        final title = _activeCount > 0 ? speedText : '';
+        if (title != _lastTitle) {
+          _lastTitle = title;
+          await trayManager.setTitle(title);
+        }
+      }
 
       // Update tooltip with speed
       await trayManager.setToolTip('HI-DM — $speedText');
@@ -121,6 +107,7 @@ class SystemTrayService with TrayListener {
         items: [
           MenuItem(label: 'HI-DM — $speedText', disabled: true),
           MenuItem(label: activeText, disabled: true),
+          MenuItem(label: queueText, disabled: true),
           MenuItem.separator(),
           MenuItem(label: 'Show Window', key: 'show'),
           MenuItem(label: 'Add URL...', key: 'add'),

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/datasources/database.dart';
 import '../../data/models/download_item.dart' as model;
 import '../../data/repositories/download_repository.dart';
+import '../../domain/services/download_manager.dart' show sortQueueBy;
 import 'live_download_state.dart';
 
 // Database provider
@@ -67,11 +68,19 @@ final selectedStatusFilterProvider = StateProvider<String?>((ref) => null);
 // Search query
 final searchQueryProvider = StateProvider<String>((ref) => '');
 
-// Filtered downloads
+/// Display order of the download list — changed from the toolbar's sort
+/// button. Defaults to oldest-first (the historical behavior).
+///
+/// Keys match [sortQueueBy] so the same option set drives the list display
+/// and the queue processing order.
+final sortOrderProvider = StateProvider<String>((ref) => 'fifo');
+
+// Filtered + sorted downloads
 final filteredDownloadsProvider = Provider<AsyncValue<List<model.DownloadItem>>>((ref) {
   final downloads = ref.watch(allDownloadsProvider);
   final category = ref.watch(selectedCategoryProvider);
   final statusFilter = ref.watch(selectedStatusFilterProvider);
+  final sortOrder = ref.watch(sortOrderProvider);
   final query = ref.watch(searchQueryProvider).toLowerCase();
 
   return downloads.whenData((list) {
@@ -93,7 +102,11 @@ final filteredDownloadsProvider = Provider<AsyncValue<List<model.DownloadItem>>>
           .toList();
     }
 
-    return filtered;
+    // sortQueueBy sorts in place — copy first so the source stream's list
+    // is never mutated.
+    final sorted = List<model.DownloadItem>.from(filtered);
+    sortQueueBy(sorted, sortOrder);
+    return sorted;
   });
 });
 

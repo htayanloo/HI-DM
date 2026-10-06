@@ -63,6 +63,7 @@ class _IsolateDownloadEngine {
   int _totalDownloaded = 0;
   int _totalSize = -1;
   bool _supportsRange = false;
+  bool _isCancelled = false;
   String? _resolvedUrl; // Final URL after redirects
 
   _IsolateDownloadEngine({
@@ -126,12 +127,16 @@ class _IsolateDownloadEngine {
         'supportsRange': _supportsRange,
       });
 
+      // Final on-disk location — in stream mode we write straight here so the
+      // file is openable (playable) while the download is still running.
+      final outputPath = p.join(config.savePath, fileName);
+
       // Phase 2: Create or restore segments
       _segments = _createOrRestoreSegments();
-      _sendLog('Segments: ${_segments.length} (range=${_supportsRange}, threads=${config.threadCount})');
+      _sendLog('Segments: ${_segments.length} (range=$_supportsRange, threads=${config.threadCount}${config.streamMode ? ', stream mode' : ''})');
 
       // Phase 3: Prepare segment tasks
-      final tasks = await _prepareSegmentTasks();
+      final tasks = await _prepareSegmentTasks(streamOutputPath: config.streamMode ? outputPath : null);
 
       // Phase 4: Start speed reporting
       _startSpeedReporting();
@@ -140,8 +145,11 @@ class _IsolateDownloadEngine {
       _sendStatus('downloading');
       await _startDownloading(tasks);
 
-      // Phase 6: Assemble
-      if (_segments.length > 1) {
+      // Phase 6: Assemble (stream mode writes directly to the output file,
+      // so there is nothing to assemble or move)
+      if (config.streamMode) {
+        _sendLog('Stream download finished: $outputPath');
+      } else if (_segments.length > 1) {
         _sendStatus('assembling');
         _sendLog('Assembling ${_segments.length} segments...');
         await _assembleFile(fileName);
@@ -159,7 +167,7 @@ class _IsolateDownloadEngine {
       _sendLog('Download completed successfully');
     } catch (e) {
       _stopSpeedReporting();
-      if (e is DioException && e.type == DioExceptionType.cancel) {
+      if (_isCancelled || (e is DioException && e.type == DioExceptionType.cancel)) {
         _sendLog('Download cancelled');
         return;
       }
@@ -184,6 +192,7 @@ class _IsolateDownloadEngine {
         _sendLog('Download resumed');
         break;
       case 'cancel':
+        _isCancelled = true;
         _connectionPool?.cancel();
         _sendLog('Download cancellation requested');
         break;
@@ -218,6 +227,11 @@ class _IsolateDownloadEngine {
   }
 
   List<SegmentInfo> _createOrRestoreSegments() {
+    // Stream mode is inherently sequential — one segment covering the file.
+    if (config.streamMode) {
+      return _segmentManager.createSegments(_totalSize, 1);
+    }
+
     if (config.resumeSegments != null && config.resumeSegments!.isNotEmpty) {
       // Restore from resume data
       return config.resumeSegments!.map((r) => SegmentInfo(
@@ -231,11 +245,11 @@ class _IsolateDownloadEngine {
     return _segmentManager.createSegments(_totalSize, effectiveThreads);
   }
 
-  Future<Map<int, SegmentTask>> _prepareSegmentTasks() async {
+  Future<Map<int, SegmentTask>> _prepareSegmentTasks({String? streamOutputPath}) async {
     final tasks = <int, SegmentTask>{};
 
     for (final segment in _segments) {
-      final tempPath = _fileAssembler.getTempFilePath(segment.index);
+      final tempPath = streamOutputPath ?? _fileAssembler.getTempFilePath(segment.index);
       var alreadyDownloaded = 0;
 
       // Check for resume data
@@ -251,9 +265,17 @@ class _IsolateDownloadEngine {
       // Also check actual temp file size
       final tempFile = File(tempPath);
       if (await tempFile.exists()) {
-        final fileSize = await tempFile.length();
-        if (fileSize > alreadyDownloaded) {
-          alreadyDownloaded = fileSize;
+        // A fresh stream download must not append to a leftover file from a
+        // previous, unrelated download at the same path.
+        if (streamOutputPath != null && config.existingDownloadedBytes <= 0) {
+          try {
+            await tempFile.delete();
+          } catch (_) {}
+        } else {
+          final fileSize = await tempFile.length();
+          if (fileSize > alreadyDownloaded) {
+            alreadyDownloaded = fileSize;
+          }
         }
       }
 
@@ -296,6 +318,17 @@ class _IsolateDownloadEngine {
     );
 
     await _connectionPool!.downloadAll(tasks);
+
+    // A segment that gave up leaves the download incomplete — surface a
+    // retryable error instead of assembling a corrupted file.
+    final incomplete = _segmentProgress.entries.any((entry) {
+      final segment = _segments.where((s) => s.index == entry.key).firstOrNull;
+      if (segment == null || segment.endByte < 0) return false;
+      return entry.value < segment.totalBytes;
+    });
+    if (incomplete && !_isCancelled) {
+      throw const StallException(Duration.zero);
+    }
   }
 
   void _onSegmentProgress(int segmentIndex, int bytesDownloaded, int totalSegmentBytes) {

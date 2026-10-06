@@ -11,6 +11,7 @@ class DownloadTile extends ConsumerWidget {
   final bool isSelected;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
+  final VoidCallback? onOpen;
   final void Function(TapDownDetails)? onSecondaryTapDown;
 
   const DownloadTile({
@@ -19,6 +20,7 @@ class DownloadTile extends ConsumerWidget {
     this.isSelected = false,
     this.onTap,
     this.onDoubleTap,
+    this.onOpen,
     this.onSecondaryTapDown,
   });
 
@@ -205,6 +207,31 @@ class DownloadTile extends ConsumerWidget {
                               _statusBadge(Icons.check_circle, 'Done', const Color(0xFF10B981))
                             else if (status == 'paused')
                               _statusBadge(Icons.pause_circle_outline, 'Paused', _getStatusColor('paused', isDark)),
+                            // One-click open for finished (and streaming) files
+                            if (onOpen != null && (status == 'completed' || (item.streamMode && isActive))) ...[
+                              const SizedBox(width: 8),
+                              Tooltip(
+                                message: status == 'completed' ? 'Open file' : 'Open file (partial — watch while downloading)',
+                                child: InkWell(
+                                  onTap: onOpen,
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(5),
+                                    decoration: BoxDecoration(
+                                      color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Icon(
+                                      status == 'completed'
+                                          ? Icons.open_in_new_rounded
+                                          : Icons.play_circle_outline_rounded,
+                                      size: 15,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ],

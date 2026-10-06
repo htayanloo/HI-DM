@@ -65,6 +65,7 @@ class DownloadRepository {
         customHeaders: Value(item.headersJson),
         proxyConfig: Value(item.proxy?.encode()),
         speedLimit: Value(item.speedLimit),
+        streamMode: Value(item.streamMode),
       ),
     );
   }
@@ -104,6 +105,7 @@ class DownloadRepository {
         customHeaders: Value(item.headersJson),
         proxyConfig: Value(item.proxy?.encode()),
         speedLimit: Value(item.speedLimit),
+        streamMode: Value(item.streamMode),
       ),
     );
   }
@@ -223,6 +225,7 @@ class DownloadRepository {
       proxy: row.proxyConfig != null ? model.ProxyConfig.decode(row.proxyConfig!) : null,
       speedLimit: row.speedLimit,
       segments: segments,
+      streamMode: row.streamMode,
     );
   }
 

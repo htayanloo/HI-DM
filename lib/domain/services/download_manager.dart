@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/constants/app_constants.dart';
@@ -15,6 +16,7 @@ import '../../data/repositories/settings_repository.dart';
 import '../../data/models/app_settings.dart';
 import 'download_engine.dart';
 import 'download_message.dart';
+import 'notification_service.dart';
 
 /// Tracks an active download isolate.
 class _ActiveDownload {
@@ -53,6 +55,8 @@ class DownloadManager {
   int _maxConcurrent = AppConstants.defaultMaxConcurrentDownloads;
   String? _tempDirectory;
   bool _initialized = false;
+  bool _shuttingDown = false;
+  String _queueOrder = 'fifo';
 
   // Throttled DB writes to prevent SQLite concurrent access crash
   final Map<int, _PendingDbUpdate> _pendingUpdates = {};
@@ -74,14 +78,168 @@ class DownloadManager {
 
   /// Initialize the manager — call once at startup.
   Future<void> initialize() async {
+    // Idempotent: a second call must not re-run startup recovery, otherwise
+    // it would re-queue downloads that are legitimately running right now.
+    if (_initialized) return;
+
     _maxConcurrent = await _settingsRepo.getIntValue(
       AppSettings.maxConcurrentDownloads,
     );
     if (_maxConcurrent <= 0) _maxConcurrent = AppConstants.defaultMaxConcurrentDownloads;
 
-    final tempDir = await getTemporaryDirectory();
-    _tempDirectory = '${tempDir.path}/hi-dm';
+    _queueOrder = await _settingsRepo.getValue(AppSettings.queueOrder);
+    if (_queueOrder.isEmpty) _queueOrder = 'fifo';
+
+    // path_provider can fail on unusual setups — fall back to the system temp
+    // dir rather than leaving the manager unable to start.
+    try {
+      final tempDir = await getTemporaryDirectory();
+      _tempDirectory = '${tempDir.path}/hi-dm';
+    } catch (e) {
+      debugPrint('[DM] Temp dir lookup failed (non-fatal): $e');
+      _tempDirectory = '${Directory.systemTemp.path}/hi-dm';
+    }
     _initialized = true;
+
+    // Downloads that were running when the app was killed are stuck in an
+    // "active" status with no isolate behind them — re-queue them so the
+    // queue processor picks them up instead of showing a frozen state.
+    await recoverInterruptedDownloads();
+    await _processQueue();
+
+    // Remove temp dirs that no longer belong to any download (leftovers from
+    // deleted/completed downloads) so half-downloaded files don't pile up.
+    unawaited(cleanOrphanTempFiles());
+  }
+
+  /// Re-queue downloads left in an active status after a crash or force-quit.
+  ///
+  /// Public so startup recovery can be exercised in tests.
+  Future<void> recoverInterruptedDownloads() async {
+    try {
+      final downloads = await _downloadRepo.getAllDownloads();
+      for (final d in downloads) {
+        if (d.id == null) continue;
+        if (isInterruptedStatus(d.status)) {
+          debugPrint('[DM] Recovering interrupted download ${d.id} (${d.status})');
+          await _downloadRepo.updateDownloadStatus(d.id!, 'queued');
+        }
+      }
+    } catch (e) {
+      debugPrint('[DM] Interrupted-download recovery error (non-fatal): $e');
+    }
+  }
+
+  /// Delete temp directories that don't map to an active download.
+  /// Returns the number of directories removed.
+  Future<int> cleanOrphanTempFiles() async {
+    if (_tempDirectory == null) return 0;
+    try {
+      final root = Directory(_tempDirectory!);
+      if (!await root.exists()) return 0;
+
+      final downloads = await _downloadRepo.getAllDownloads();
+      final keepIds = <String>{
+        for (final d in downloads)
+          if (d.id != null &&
+              d.status != 'completed' &&
+              d.status != 'error')
+            d.id.toString(),
+      };
+
+      var removed = 0;
+      await for (final entity in root.list()) {
+        if (entity is! Directory) continue;
+        final id = p.basename(entity.path);
+        if (keepIds.contains(id)) continue;
+        try {
+          await entity.delete(recursive: true);
+          removed++;
+        } catch (_) {}
+      }
+      if (removed > 0) {
+        debugPrint('[DM] Removed $removed orphaned temp dir(s)');
+      }
+      return removed;
+    } catch (e) {
+      debugPrint('[DM] Temp cleanup error (non-fatal): $e');
+      return 0;
+    }
+  }
+
+  /// Delete temp data for every download that is not currently running —
+  /// the user-facing "remove half-downloaded files" action.
+  /// Returns the number of downloads whose temp data was removed.
+  Future<int> clearUnfinishedTempData() async {
+    if (_tempDirectory == null) return 0;
+    var removed = 0;
+    try {
+      final downloads = await _downloadRepo.getAllDownloads();
+      for (final d in downloads) {
+        if (d.id == null) continue;
+        if (_activeDownloads.containsKey(d.id)) continue;
+        if (d.status == 'completed') continue;
+
+        final dir = Directory('$_tempDirectory/${d.id}');
+        if (await dir.exists()) {
+          try {
+            await dir.delete(recursive: true);
+            removed++;
+          } catch (_) {}
+        }
+        // Reset progress so the UI reflects that partial data is gone.
+        await _downloadRepo.updateDownloadProgress(d.id!, 0, 0);
+        await _downloadRepo.deleteSegments(d.id!);
+      }
+      await cleanOrphanTempFiles();
+    } catch (e) {
+      debugPrint('[DM] Clear unfinished temp error (non-fatal): $e');
+    }
+    return removed;
+  }
+
+  /// Gracefully stop everything so the process can exit: pause active
+  /// downloads (persisting their state for resume), flush throttled DB
+  /// writes, then kill all isolates.
+  Future<void> shutdown() async {
+    if (_shuttingDown) return;
+    _shuttingDown = true;
+
+    try {
+      for (final active in _activeDownloads.values) {
+        try {
+          active.commandPort.send({'command': 'pause'});
+        } catch (_) {}
+      }
+      // Give isolates a moment to flush their final progress event.
+      if (_activeDownloads.isNotEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      }
+    } catch (_) {}
+
+    // Mark anything still active as paused in the DB so it is resumable.
+    try {
+      for (final id in _activeDownloads.keys) {
+        await _downloadRepo.updateDownloadStatus(id, 'paused');
+      }
+    } catch (_) {}
+
+    // Flush throttled progress writes before the process dies.
+    _dbWriteTimer?.cancel();
+    _dbWriteTimer = null;
+    try {
+      await _flushAllPendingUpdates();
+    } catch (_) {}
+
+    for (final active in _activeDownloads.values) {
+      try {
+        active.dispose();
+      } catch (_) {}
+    }
+    _activeDownloads.clear();
+    try {
+      if (!_eventController.isClosed) await _eventController.close();
+    } catch (_) {}
   }
 
   Future<void> _ensureInitialized() async {
@@ -98,6 +256,7 @@ class DownloadManager {
     String? proxyConfigJson,
     int? queueId,
     bool startImmediately = true,
+    bool streamMode = false,
   }) async {
     await _ensureInitialized();
     final resolvedFileName = fileName ?? FileUtils.getFileNameFromUrl(url);
@@ -119,11 +278,13 @@ class DownloadManager {
       url: url,
       fileName: sanitizedName,
       savePath: effectiveSavePath,
-      threadCount: threadCount ?? defaultThreads,
+      // Stream mode is sequential by definition — force a single connection.
+      threadCount: streamMode ? 1 : (threadCount ?? defaultThreads),
       headers: headers,
       category: category?.name,
       queueId: queueId,
       dateAdded: DateTime.now(),
+      streamMode: streamMode,
     );
 
     final id = await _downloadRepo.insertDownload(item);
@@ -139,6 +300,7 @@ class DownloadManager {
   /// Start a download by its ID.
   Future<void> startDownload(int downloadId) async {
     await _ensureInitialized();
+    if (_shuttingDown) return;
     if (_activeDownloads.containsKey(downloadId)) return;
 
     // Check concurrency limit
@@ -214,6 +376,8 @@ class DownloadManager {
       retryDelaySeconds: await _settingsRepo.getIntValue(AppSettings.retryDelay),
       existingTotalSize: item.totalSize > 0 ? item.totalSize : null,
       resumeSegments: resumeSegments,
+      streamMode: item.streamMode,
+      existingDownloadedBytes: item.downloadedSize,
     );
 
     try {
@@ -280,6 +444,16 @@ class DownloadManager {
     }
 
     await _downloadRepo.deleteDownload(downloadId);
+
+    // Remove the download's temp dir so partial segments don't pile up.
+    if (_tempDirectory != null) {
+      try {
+        final dir = Directory('$_tempDirectory/$downloadId');
+        if (await dir.exists()) {
+          await dir.delete(recursive: true);
+        }
+      } catch (_) {}
+    }
   }
 
   /// Update per-download proxy config. Requires restart to take effect.
@@ -362,11 +536,13 @@ class DownloadManager {
 
   /// Dispose the manager and kill all isolates.
   void dispose() {
+    _shuttingDown = true;
     for (final active in _activeDownloads.values) {
       active.dispose();
     }
     _activeDownloads.clear();
-    _eventController.close();
+    _dbWriteTimer?.cancel();
+    if (!_eventController.isClosed) _eventController.close();
   }
 
   // --- Private ---
@@ -453,6 +629,7 @@ class DownloadManager {
         // Flush pending writes before completing
         _flushPendingUpdate(event.downloadId);
         _onDownloadComplete(event.downloadId);
+        _notifyCompleted(event.downloadId);
         break;
 
       case DownloadEventType.error:
@@ -460,6 +637,7 @@ class DownloadManager {
         if (fatal) {
           _flushPendingUpdate(event.downloadId);
           _onDownloadComplete(event.downloadId);
+          _notifyError(event.downloadId, event.data['message'] as String? ?? 'Unknown error');
         }
         break;
 
@@ -526,15 +704,53 @@ class DownloadManager {
     _processQueue();
   }
 
+  /// Show an OS notification when a download finishes (if enabled).
+  Future<void> _notifyCompleted(int downloadId) async {
+    try {
+      final enabled = await _settingsRepo.getBoolValue(
+        AppSettings.notificationsEnabled,
+      );
+      if (!enabled) return;
+      final item = await _downloadRepo.getDownloadById(downloadId);
+      if (item == null) return;
+      final path = '${item.savePath}/${item.fileName}';
+      await NotificationService.showDownloadComplete(item.fileName, filePath: path);
+    } catch (e) {
+      debugPrint('[DM] Completion notification error (non-fatal): $e');
+    }
+  }
+
+  /// Show an OS notification when a download fails permanently.
+  Future<void> _notifyError(int downloadId, String message) async {
+    try {
+      final enabled = await _settingsRepo.getBoolValue(
+        AppSettings.notificationsEnabled,
+      );
+      if (!enabled) return;
+      final item = await _downloadRepo.getDownloadById(downloadId);
+      if (item == null) return;
+      await NotificationService.showDownloadError(item.fileName, message);
+    } catch (e) {
+      debugPrint('[DM] Error notification error (non-fatal): $e');
+    }
+  }
+
+  /// Update the queue ordering preference at runtime (from Settings).
+  Future<void> setQueueOrder(String order) async {
+    _queueOrder = order;
+    await _settingsRepo.setValue(AppSettings.queueOrder, order);
+    await _processQueue();
+  }
+
   /// Process queued downloads when a slot opens up.
   Future<void> _processQueue() async {
+    if (_shuttingDown) return;
     if (_activeDownloads.length >= _maxConcurrent) return;
 
     final downloads = await _downloadRepo.getAllDownloads();
     final queued = downloads.where((d) => d.status == 'queued').toList();
 
-    // Sort by date added (oldest first)
-    queued.sort((a, b) => a.dateAdded.compareTo(b.dateAdded));
+    sortQueueBy(queued, _queueOrder);
 
     for (final item in queued) {
       if (_activeDownloads.length >= _maxConcurrent) break;
@@ -560,4 +776,35 @@ class DownloadManager {
 class _PendingDbUpdate {
   int? downloadedBytes;
   double? speed;
+}
+
+/// Statuses that mean "this download's isolate died with the app".
+///
+/// A row still in one of these statuses after a restart has no worker behind
+/// it, so it would otherwise show a frozen progress bar forever.
+bool isInterruptedStatus(String status) {
+  return status == 'connecting' ||
+      status == 'downloading' ||
+      status == 'assembling' ||
+      status == 'merging';
+}
+
+/// Sorts queued downloads in place according to the user's chosen order.
+///
+/// Orders: `fifo` (oldest first, default), `lifo` (newest first),
+/// `largest`, `smallest`, `name` (A–Z).
+void sortQueueBy(List<model.DownloadItem> queued, String order) {
+  switch (order) {
+    case 'lifo': // Newest first
+      queued.sort((a, b) => b.dateAdded.compareTo(a.dateAdded));
+    case 'largest': // Biggest file first
+      queued.sort((a, b) => b.totalSize.compareTo(a.totalSize));
+    case 'smallest': // Smallest file first
+      queued.sort((a, b) => a.totalSize.compareTo(b.totalSize));
+    case 'name': // Alphabetical
+      queued.sort((a, b) => a.fileName.toLowerCase().compareTo(b.fileName.toLowerCase()));
+    case 'fifo':
+    default: // Oldest first (default)
+      queued.sort((a, b) => a.dateAdded.compareTo(b.dateAdded));
+  }
 }

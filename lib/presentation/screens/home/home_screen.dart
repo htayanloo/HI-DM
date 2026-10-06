@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:window_manager/window_manager.dart';
 
+import '../../../core/utils/open_utils.dart';
 import '../../../core/utils/speed_formatter.dart';
 import '../../../data/models/app_settings.dart';
 import '../../../data/models/download_item.dart';
@@ -37,6 +39,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   ClipboardMonitor? _clipboardMonitor;
   bool _clipboardDialogShowing = false;
   final _tray = SystemTrayService();
+  bool _isQuitting = false;
 
   @override
   void initState() {
@@ -45,7 +48,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ref.read(downloadManagerProvider).initialize();
       _initClipboardMonitor();
       _initSystemTray();
+      _initWindowCallbacks();
+      _loadSortOrder();
     });
+  }
+
+  /// Restore the list's persisted display order.
+  Future<void> _loadSortOrder() async {
+    try {
+      final saved = await ref
+          .read(settingsRepositoryProvider)
+          .getValue(AppSettings.listSortOrder);
+      // The screen may have been disposed while the read was in flight —
+      // touching ref afterwards would throw and leak work.
+      if (!mounted) return;
+      if (saved.isNotEmpty) {
+        ref.read(sortOrderProvider.notifier).state = saved;
+      }
+    } catch (_) {}
   }
 
   @override
@@ -55,6 +75,57 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     super.dispose();
   }
 
+  /// Wire the close/minimize events so the window buttons actually behave:
+  /// close = graceful quit (no background zombie), minimize = optional
+  /// hide-to-tray so download status stays visible in the OS status bar.
+  void _initWindowCallbacks() {
+    WindowConfig.instance.onCloseRequested = _gracefulQuit;
+    WindowConfig.instance.onMinimizeRequested = () async {
+      try {
+        final repo = ref.read(settingsRepositoryProvider);
+        final hideOnMinimize =
+            await repo.getBoolValue(AppSettings.minimizeToTray);
+        if (hideOnMinimize && mounted) {
+          await windowManager.hide();
+        }
+      } catch (_) {}
+    };
+  }
+
+  /// Quit cleanly: pause downloads (so they resume next launch), flush state,
+  /// destroy the tray, then terminate the process.
+  Future<void> _gracefulQuit() async {
+    if (_isQuitting) return;
+    _isQuitting = true;
+    debugPrint('[Home] Graceful quit started');
+
+    try {
+      await ref.read(downloadManagerProvider).shutdown();
+      debugPrint('[Home] Downloads flushed and stopped');
+    } catch (e) {
+      debugPrint('[Home] Shutdown error (non-fatal): $e');
+    }
+
+    try {
+      _tray.dispose();
+      debugPrint('[Home] Tray destroyed');
+    } catch (_) {}
+
+    try {
+      if (await windowManager.isVisible()) {
+        await windowManager.destroy();
+        debugPrint('[Home] Window destroyed');
+      }
+    } catch (e) {
+      debugPrint('[Home] Window destroy error (non-fatal): $e');
+    }
+
+    // Give Flutter a tick to finish, then make sure the process dies.
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    debugPrint('[Home] Exiting process');
+    exit(0);
+  }
+
   void _initSystemTray() {
     _tray.onShowWindow = () {
       // Window will be shown by tray service
@@ -62,14 +133,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _tray.onAddUrl = () => _showAddUrlDialog();
     _tray.onPauseAll = () => ref.read(downloadManagerProvider).pauseAll();
     _tray.onResumeAll = () => ref.read(downloadManagerProvider).resumeAll();
-    _tray.onQuit = () => WindowConfig.close();
+    _tray.onQuit = () => _gracefulQuit();
     _tray.initialize();
   }
 
   Future<void> _initClipboardMonitor() async {
     final settingsRepo = ref.read(settingsRepositoryProvider);
     final enabled = await settingsRepo.getBoolValue(AppSettings.clipboardMonitoring);
-    if (!enabled) return;
+    // Bail out if the screen went away while the setting was being read —
+    // otherwise the 500ms polling timer starts with nobody to stop it.
+    if (!enabled || !mounted) return;
 
     _clipboardMonitor = ClipboardMonitor(
       onUrlDetected: (url) {
@@ -162,15 +235,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _openFolder(String path) async {
-    try {
-      if (Platform.isMacOS) {
-        await Process.run('open', [path]);
-      } else if (Platform.isWindows) {
-        await Process.run('explorer', [path]);
-      } else if (Platform.isLinux) {
-        await Process.run('xdg-open', [path]);
-      }
-    } catch (_) {}
+    await OpenUtils.openFolder(path);
+  }
+
+  Future<void> _openFile(DownloadItem item) async {
+    final path = '${item.savePath}/${item.fileName}';
+    final opened = await OpenUtils.openFile(path);
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('File not found: ${item.fileName}'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   void _showBatchDialog() {
@@ -246,11 +326,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _showContextMenu(BuildContext context, Offset position, DownloadItem item) {
     final manager = ref.read(downloadManagerProvider);
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final outputPath = '${item.savePath}/${item.fileName}';
+    final outputExists = File(outputPath).existsSync();
+    // Stream-mode downloads write straight to the final file, so partial
+    // content is openable (playable) while the download is still running.
+    final canOpen = item.status == 'completed' ||
+        (item.streamMode && item.isActive && outputExists);
+
     showMenu<String>(
       context: context,
       position: RelativeRect.fromRect(position & const Size(1, 1), Offset.zero & overlay.size),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       items: [
+        if (canOpen)
+          const PopupMenuItem(value: 'openFile', child: _ContextMenuItem(icon: Icons.open_in_new_rounded, label: 'Open File')),
         if (item.status == 'paused' || item.status == 'error' || item.status == 'queued')
           const PopupMenuItem(value: 'resume', child: _ContextMenuItem(icon: Icons.play_arrow_rounded, label: 'Resume')),
         if (item.isActive)
@@ -266,6 +355,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ).then((value) {
       if (value == null || item.id == null) return;
       switch (value) {
+        case 'openFile': _openFile(item);
         case 'resume': manager.resumeDownload(item.id!);
         case 'pause': manager.pauseDownload(item.id!);
         case 'delete': manager.deleteDownload(item.id!);
@@ -299,6 +389,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final categories = ref.watch(allCategoriesProvider);
     final activeCount = ref.watch(activeDownloadsCountProvider);
     final totalSpeed = ref.watch(totalSpeedProvider);
+    final allDownloads = ref.watch(allDownloadsProvider).valueOrNull ?? const [];
+    final queuedCount = allDownloads.where((d) => d.status == 'queued').length;
+    final completedCount = allDownloads.where((d) => d.status == 'completed').length;
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -339,7 +432,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ),
           // Status bar
-          _buildStatusBar(context, theme, activeCount, totalSpeed),
+          _buildStatusBar(context, theme, activeCount, totalSpeed,
+              queuedCount: queuedCount, completedCount: completedCount),
         ],
       ),
     );
@@ -411,9 +505,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const GrabberScreen())),
           ),
           const Spacer(),
+          // Sort — change the display order of the download list.
+          // Icon-only so the toolbar still fits the 800px minimum window.
+          _buildSortMenu(context, theme),
+          const SizedBox(width: 8),
           // Search field
           SizedBox(
-            width: 220,
+            width: 190,
             height: 38,
             child: TextField(
               style: const TextStyle(fontSize: 13),
@@ -445,6 +543,44 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Sort picker for the download list — icon-only so it fits the toolbar at
+  /// the minimum window width. The tooltip shows the active order and the
+  /// menu marks it with a check.
+  Widget _buildSortMenu(BuildContext context, ThemeData theme) {
+    final current = ref.watch(sortOrderProvider);
+
+    return PopupMenuButton<String>(
+      tooltip: 'Sort: ${_sortLabel(current)}',
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      onSelected: (value) {
+        ref.read(sortOrderProvider.notifier).state = value;
+        // Persist so the choice survives a relaunch.
+        ref
+            .read(settingsRepositoryProvider)
+            .setValue(AppSettings.listSortOrder, value);
+      },
+      itemBuilder: (_) => [
+        for (final (value, text) in _sortOptions)
+          CheckedPopupMenuItem<String>(
+            value: value,
+            checked: current == value,
+            child: Text(text, style: const TextStyle(fontSize: 13)),
+          ),
+      ],
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Icon(Icons.sort_rounded, size: 20, color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ),
       ),
     );
   }
@@ -666,6 +802,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Navigator.of(context).push(MaterialPageRoute(builder: (_) => DownloadDetailScreen(downloadId: item.id!)));
                 }
               },
+              onOpen: () => _openFile(item),
               onSecondaryTapDown: (details) => _showContextMenu(context, details.globalPosition, item),
             );
           },
@@ -676,9 +813,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _buildStatusBar(BuildContext context, ThemeData theme, int activeCount, double totalSpeed) {
-    // Update system tray with current stats
-    _tray.updateStats(totalSpeed: totalSpeed, activeDownloads: activeCount);
+  Widget _buildStatusBar(
+    BuildContext context,
+    ThemeData theme,
+    int activeCount,
+    double totalSpeed, {
+    int queuedCount = 0,
+    int completedCount = 0,
+  }) {
+    // Update system tray with current stats (drives the OS status-bar /
+    // menu-bar details while the window is hidden).
+    _tray.updateStats(
+      totalSpeed: totalSpeed,
+      activeDownloads: activeCount,
+      queuedCount: queuedCount,
+      completedCount: completedCount,
+    );
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -713,6 +863,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const SizedBox(width: 4),
           Text(
             SpeedFormatter.format(totalSpeed),
+            style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w500),
+          ),
+          const SizedBox(width: 20),
+          Icon(Icons.schedule_rounded, size: 14, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5)),
+          const SizedBox(width: 4),
+          Text(
+            '$queuedCount queued',
             style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w500),
           ),
           const Spacer(),
@@ -863,4 +1020,21 @@ class _ContextMenuItem extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Display orders offered for the download list. Keys match [sortQueueBy]
+/// so the toolbar picker and the queue processor share one option set.
+const _sortOptions = <(String, String)>[
+  ('fifo', 'Oldest first'),
+  ('lifo', 'Newest first'),
+  ('largest', 'Largest first'),
+  ('smallest', 'Smallest first'),
+  ('name', 'Name A–Z'),
+];
+
+String _sortLabel(String value) {
+  for (final (key, label) in _sortOptions) {
+    if (key == value) return label;
+  }
+  return _sortOptions.first.$2;
 }

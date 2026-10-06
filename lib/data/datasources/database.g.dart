@@ -694,6 +694,21 @@ class $DownloadItemsTable extends DownloadItems
     requiredDuringInsert: false,
     defaultValue: const Constant(0),
   );
+  static const VerificationMeta _streamModeMeta = const VerificationMeta(
+    'streamMode',
+  );
+  @override
+  late final GeneratedColumn<bool> streamMode = GeneratedColumn<bool>(
+    'stream_mode',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("stream_mode" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -714,6 +729,7 @@ class $DownloadItemsTable extends DownloadItems
     customHeaders,
     proxyConfig,
     speedLimit,
+    streamMode,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -858,6 +874,12 @@ class $DownloadItemsTable extends DownloadItems
         speedLimit.isAcceptableOrUnknown(data['speed_limit']!, _speedLimitMeta),
       );
     }
+    if (data.containsKey('stream_mode')) {
+      context.handle(
+        _streamModeMeta,
+        streamMode.isAcceptableOrUnknown(data['stream_mode']!, _streamModeMeta),
+      );
+    }
     return context;
   }
 
@@ -939,6 +961,10 @@ class $DownloadItemsTable extends DownloadItems
         DriftSqlType.int,
         data['${effectivePrefix}speed_limit'],
       )!,
+      streamMode: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}stream_mode'],
+      )!,
     );
   }
 
@@ -967,6 +993,7 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
   final String customHeaders;
   final String? proxyConfig;
   final int speedLimit;
+  final bool streamMode;
   const DownloadItem({
     required this.id,
     required this.url,
@@ -986,6 +1013,7 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
     required this.customHeaders,
     this.proxyConfig,
     required this.speedLimit,
+    required this.streamMode,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1018,6 +1046,7 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
       map['proxy_config'] = Variable<String>(proxyConfig);
     }
     map['speed_limit'] = Variable<int>(speedLimit);
+    map['stream_mode'] = Variable<bool>(streamMode);
     return map;
   }
 
@@ -1051,6 +1080,7 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
           ? const Value.absent()
           : Value(proxyConfig),
       speedLimit: Value(speedLimit),
+      streamMode: Value(streamMode),
     );
   }
 
@@ -1078,6 +1108,7 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
       customHeaders: serializer.fromJson<String>(json['customHeaders']),
       proxyConfig: serializer.fromJson<String?>(json['proxyConfig']),
       speedLimit: serializer.fromJson<int>(json['speedLimit']),
+      streamMode: serializer.fromJson<bool>(json['streamMode']),
     );
   }
   @override
@@ -1102,6 +1133,7 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
       'customHeaders': serializer.toJson<String>(customHeaders),
       'proxyConfig': serializer.toJson<String?>(proxyConfig),
       'speedLimit': serializer.toJson<int>(speedLimit),
+      'streamMode': serializer.toJson<bool>(streamMode),
     };
   }
 
@@ -1124,6 +1156,7 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
     String? customHeaders,
     Value<String?> proxyConfig = const Value.absent(),
     int? speedLimit,
+    bool? streamMode,
   }) => DownloadItem(
     id: id ?? this.id,
     url: url ?? this.url,
@@ -1145,6 +1178,7 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
     customHeaders: customHeaders ?? this.customHeaders,
     proxyConfig: proxyConfig.present ? proxyConfig.value : this.proxyConfig,
     speedLimit: speedLimit ?? this.speedLimit,
+    streamMode: streamMode ?? this.streamMode,
   );
   DownloadItem copyWithCompanion(DownloadItemsCompanion data) {
     return DownloadItem(
@@ -1182,6 +1216,9 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
       speedLimit: data.speedLimit.present
           ? data.speedLimit.value
           : this.speedLimit,
+      streamMode: data.streamMode.present
+          ? data.streamMode.value
+          : this.streamMode,
     );
   }
 
@@ -1205,7 +1242,8 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
           ..write('retryCount: $retryCount, ')
           ..write('customHeaders: $customHeaders, ')
           ..write('proxyConfig: $proxyConfig, ')
-          ..write('speedLimit: $speedLimit')
+          ..write('speedLimit: $speedLimit, ')
+          ..write('streamMode: $streamMode')
           ..write(')'))
         .toString();
   }
@@ -1230,6 +1268,7 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
     customHeaders,
     proxyConfig,
     speedLimit,
+    streamMode,
   );
   @override
   bool operator ==(Object other) =>
@@ -1252,7 +1291,8 @@ class DownloadItem extends DataClass implements Insertable<DownloadItem> {
           other.retryCount == this.retryCount &&
           other.customHeaders == this.customHeaders &&
           other.proxyConfig == this.proxyConfig &&
-          other.speedLimit == this.speedLimit);
+          other.speedLimit == this.speedLimit &&
+          other.streamMode == this.streamMode);
 }
 
 class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
@@ -1274,6 +1314,7 @@ class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
   final Value<String> customHeaders;
   final Value<String?> proxyConfig;
   final Value<int> speedLimit;
+  final Value<bool> streamMode;
   const DownloadItemsCompanion({
     this.id = const Value.absent(),
     this.url = const Value.absent(),
@@ -1293,6 +1334,7 @@ class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
     this.customHeaders = const Value.absent(),
     this.proxyConfig = const Value.absent(),
     this.speedLimit = const Value.absent(),
+    this.streamMode = const Value.absent(),
   });
   DownloadItemsCompanion.insert({
     this.id = const Value.absent(),
@@ -1313,6 +1355,7 @@ class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
     this.customHeaders = const Value.absent(),
     this.proxyConfig = const Value.absent(),
     this.speedLimit = const Value.absent(),
+    this.streamMode = const Value.absent(),
   }) : url = Value(url),
        fileName = Value(fileName),
        savePath = Value(savePath),
@@ -1336,6 +1379,7 @@ class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
     Expression<String>? customHeaders,
     Expression<String>? proxyConfig,
     Expression<int>? speedLimit,
+    Expression<bool>? streamMode,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -1356,6 +1400,7 @@ class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
       if (customHeaders != null) 'custom_headers': customHeaders,
       if (proxyConfig != null) 'proxy_config': proxyConfig,
       if (speedLimit != null) 'speed_limit': speedLimit,
+      if (streamMode != null) 'stream_mode': streamMode,
     });
   }
 
@@ -1378,6 +1423,7 @@ class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
     Value<String>? customHeaders,
     Value<String?>? proxyConfig,
     Value<int>? speedLimit,
+    Value<bool>? streamMode,
   }) {
     return DownloadItemsCompanion(
       id: id ?? this.id,
@@ -1398,6 +1444,7 @@ class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
       customHeaders: customHeaders ?? this.customHeaders,
       proxyConfig: proxyConfig ?? this.proxyConfig,
       speedLimit: speedLimit ?? this.speedLimit,
+      streamMode: streamMode ?? this.streamMode,
     );
   }
 
@@ -1458,6 +1505,9 @@ class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
     if (speedLimit.present) {
       map['speed_limit'] = Variable<int>(speedLimit.value);
     }
+    if (streamMode.present) {
+      map['stream_mode'] = Variable<bool>(streamMode.value);
+    }
     return map;
   }
 
@@ -1481,7 +1531,8 @@ class DownloadItemsCompanion extends UpdateCompanion<DownloadItem> {
           ..write('retryCount: $retryCount, ')
           ..write('customHeaders: $customHeaders, ')
           ..write('proxyConfig: $proxyConfig, ')
-          ..write('speedLimit: $speedLimit')
+          ..write('speedLimit: $speedLimit, ')
+          ..write('streamMode: $streamMode')
           ..write(')'))
         .toString();
   }
@@ -2920,6 +2971,7 @@ typedef $$DownloadItemsTableCreateCompanionBuilder =
       Value<String> customHeaders,
       Value<String?> proxyConfig,
       Value<int> speedLimit,
+      Value<bool> streamMode,
     });
 typedef $$DownloadItemsTableUpdateCompanionBuilder =
     DownloadItemsCompanion Function({
@@ -2941,6 +2993,7 @@ typedef $$DownloadItemsTableUpdateCompanionBuilder =
       Value<String> customHeaders,
       Value<String?> proxyConfig,
       Value<int> speedLimit,
+      Value<bool> streamMode,
     });
 
 final class $$DownloadItemsTableReferences
@@ -3088,6 +3141,11 @@ class $$DownloadItemsTableFilterComposer
     builder: (column) => ColumnFilters(column),
   );
 
+  ColumnFilters<bool> get streamMode => $composableBuilder(
+    column: $table.streamMode,
+    builder: (column) => ColumnFilters(column),
+  );
+
   $$DownloadQueuesTableFilterComposer get queueId {
     final $$DownloadQueuesTableFilterComposer composer = $composerBuilder(
       composer: this,
@@ -3231,6 +3289,11 @@ class $$DownloadItemsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<bool> get streamMode => $composableBuilder(
+    column: $table.streamMode,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$DownloadQueuesTableOrderingComposer get queueId {
     final $$DownloadQueuesTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -3331,6 +3394,11 @@ class $$DownloadItemsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<bool> get streamMode => $composableBuilder(
+    column: $table.streamMode,
+    builder: (column) => column,
+  );
+
   $$DownloadQueuesTableAnnotationComposer get queueId {
     final $$DownloadQueuesTableAnnotationComposer composer = $composerBuilder(
       composer: this,
@@ -3426,6 +3494,7 @@ class $$DownloadItemsTableTableManager
                 Value<String> customHeaders = const Value.absent(),
                 Value<String?> proxyConfig = const Value.absent(),
                 Value<int> speedLimit = const Value.absent(),
+                Value<bool> streamMode = const Value.absent(),
               }) => DownloadItemsCompanion(
                 id: id,
                 url: url,
@@ -3445,6 +3514,7 @@ class $$DownloadItemsTableTableManager
                 customHeaders: customHeaders,
                 proxyConfig: proxyConfig,
                 speedLimit: speedLimit,
+                streamMode: streamMode,
               ),
           createCompanionCallback:
               ({
@@ -3466,6 +3536,7 @@ class $$DownloadItemsTableTableManager
                 Value<String> customHeaders = const Value.absent(),
                 Value<String?> proxyConfig = const Value.absent(),
                 Value<int> speedLimit = const Value.absent(),
+                Value<bool> streamMode = const Value.absent(),
               }) => DownloadItemsCompanion.insert(
                 id: id,
                 url: url,
@@ -3485,6 +3556,7 @@ class $$DownloadItemsTableTableManager
                 customHeaders: customHeaders,
                 proxyConfig: proxyConfig,
                 speedLimit: speedLimit,
+                streamMode: streamMode,
               ),
           withReferenceMapper: (p0) => p0
               .map(

@@ -24,6 +24,10 @@ class DownloadItem {
   final ProxyConfig? proxy;
   final List<DownloadSegment> segments;
 
+  /// Sequential single-connection download written directly to the final
+  /// file, so it can be opened/played while still downloading.
+  final bool streamMode;
+
   const DownloadItem({
     this.id,
     required this.url,
@@ -44,6 +48,7 @@ class DownloadItem {
     this.headers = const {},
     this.proxy,
     this.segments = const [],
+    this.streamMode = false,
   });
 
   double get progress => totalSize > 0 ? downloadedSize / totalSize : 0;
@@ -83,6 +88,7 @@ class DownloadItem {
     Map<String, String>? headers,
     ProxyConfig? proxy,
     List<DownloadSegment>? segments,
+    bool? streamMode,
   }) => DownloadItem(
     id: id ?? this.id,
     url: url ?? this.url,
@@ -103,5 +109,6 @@ class DownloadItem {
     headers: headers ?? this.headers,
     proxy: proxy ?? this.proxy,
     segments: segments ?? this.segments,
+    streamMode: streamMode ?? this.streamMode,
   );
 }

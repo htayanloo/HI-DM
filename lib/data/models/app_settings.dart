@@ -34,6 +34,9 @@ class AppSettings {
   static const String maxConcurrentDownloads = 'max_concurrent_downloads';
   static const String globalProxyEnabled = 'global_proxy_enabled';
   static const String globalProxyConfig = 'global_proxy_config';
+  static const String savePathCustomized = 'save_path_customized';
+  static const String queueOrder = 'queue_order';
+  static const String listSortOrder = 'list_sort_order';
 
   // Default values
   static const Map<String, String> defaults = {
@@ -61,5 +64,8 @@ class AppSettings {
     maxConcurrentDownloads: '3',
     globalProxyEnabled: 'false',
     globalProxyConfig: '',
+    savePathCustomized: 'false',
+    queueOrder: 'fifo',
+    listSortOrder: 'fifo',
   };
 }
