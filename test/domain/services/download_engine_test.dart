@@ -172,4 +172,59 @@ void main() {
     expect(types, contains('completed'), reason: 'events: $types');
     expect(target.readAsBytesSync(), equals(body));
   });
+
+  test('stream mode creates a missing nested save directory', () async {
+    servedName = 'nested.bin';
+    final nested = '${saveDir.path}/a/b/c';
+    final config = DownloadIsolateConfig(
+      downloadId: 4,
+      url: 'http://127.0.0.1:${server.port}/movie.bin',
+      savePath: nested, // does not exist yet
+      fileName: 'nested.bin',
+      tempDirectory: tempDir.path,
+      threadCount: 1,
+      streamMode: true,
+      connectionTimeoutSeconds: 5,
+      maxRetries: 2,
+      retryDelaySeconds: 1,
+    );
+
+    final events = await runDownload(config);
+    final types = events.map((e) => e['type']).toSet();
+
+    expect(types, contains('completed'), reason: 'events: $types');
+    expect(Directory(nested).existsSync(), isTrue);
+
+    final outputFile = File('$nested/nested.bin');
+    expect(outputFile.existsSync(), isTrue);
+    expect(outputFile.readAsBytesSync(), equals(body));
+  });
+
+  test('stream mode reports an error instead of completing when the '
+      'destination cannot be created', () async {
+    servedName = 'blocked.bin';
+    // A file sits where the parent directory would have to be — creating the
+    // destination must fail, and that failure must reach the UI.
+    final blocker = File('${saveDir.path}/blocker')..writeAsStringSync('x');
+
+    final config = DownloadIsolateConfig(
+      downloadId: 5,
+      url: 'http://127.0.0.1:${server.port}/movie.bin',
+      savePath: '${blocker.path}/deeper',
+      fileName: 'blocked.bin',
+      tempDirectory: tempDir.path,
+      threadCount: 1,
+      streamMode: true,
+      connectionTimeoutSeconds: 5,
+      maxRetries: 1,
+      retryDelaySeconds: 1,
+    );
+
+    final events = await runDownload(config);
+    final types = events.map((e) => e['type']).toSet();
+
+    expect(types, contains('error'), reason: 'events: $types');
+    expect(types, isNot(contains('completed')),
+        reason: 'a download with nothing on disk must never complete');
+  });
 }

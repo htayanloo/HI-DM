@@ -76,6 +76,11 @@ class DownloadManager {
   /// Number of currently active downloads.
   int get activeCount => _activeDownloads.length;
 
+  /// Test seam: point the manager at a temp root without running [initialize],
+  /// which would also start the queue and spawn isolates.
+  @visibleForTesting
+  set tempDirectoryRoot(String path) => _tempDirectory = path;
+
   /// Initialize the manager — call once at startup.
   Future<void> initialize() async {
     // Idempotent: a second call must not re-run startup recovery, otherwise
@@ -92,12 +97,14 @@ class DownloadManager {
 
     // path_provider can fail on unusual setups — fall back to the system temp
     // dir rather than leaving the manager unable to start.
-    try {
-      final tempDir = await getTemporaryDirectory();
-      _tempDirectory = '${tempDir.path}/hi-dm';
-    } catch (e) {
-      debugPrint('[DM] Temp dir lookup failed (non-fatal): $e');
-      _tempDirectory = '${Directory.systemTemp.path}/hi-dm';
+    if (_tempDirectory == null) {
+      try {
+        final tempDir = await getTemporaryDirectory();
+        _tempDirectory = '${tempDir.path}/hi-dm';
+      } catch (e) {
+        debugPrint('[DM] Temp dir lookup failed (non-fatal): $e');
+        _tempDirectory = '${Directory.systemTemp.path}/hi-dm';
+      }
     }
     _initialized = true;
 
@@ -139,12 +146,13 @@ class DownloadManager {
       if (!await root.exists()) return 0;
 
       final downloads = await _downloadRepo.getAllDownloads();
+      // Only completed downloads are done with their temp data. Failed
+      // downloads are still resumable and their segments are the only copy of
+      // the bytes already fetched — deleting them would throw away hours of
+      // work after a network outage.
       final keepIds = <String>{
         for (final d in downloads)
-          if (d.id != null &&
-              d.status != 'completed' &&
-              d.status != 'error')
-            d.id.toString(),
+          if (d.id != null && d.status != 'completed') d.id.toString(),
       };
 
       var removed = 0;
@@ -187,6 +195,24 @@ class DownloadManager {
             removed++;
           } catch (_) {}
         }
+
+        // Stream-mode downloads write straight to their final path, so their
+        // partial data lives outside the temp directory. Leaving it behind
+        // would keep a large half-written file while the UI promises to free
+        // the space, so remove it — completed downloads are skipped above, so
+        // this can never touch a finished file.
+        if (d.streamMode) {
+          try {
+            final partial = File(p.join(d.savePath, d.fileName));
+            if (await partial.exists()) {
+              await partial.delete();
+              removed++;
+            }
+          } catch (e) {
+            debugPrint('[DM] Could not remove stream partial for ${d.id}: $e');
+          }
+        }
+
         // Reset progress so the UI reflects that partial data is gone.
         await _downloadRepo.updateDownloadProgress(d.id!, 0, 0);
         await _downloadRepo.deleteSegments(d.id!);

@@ -57,6 +57,24 @@ All notable changes to HI-DM will be documented in this file.
 - Half-downloaded leftovers no longer accumulate (temp dir removed on delete,
   orphans cleaned at startup)
 
+### Fixed in review follow-up
+- **Paused retry re-requested bytes that were already on disk** — a pause that
+  lands while a read is outstanding now re-reads the real temp-file length
+  before the retry, so resuming no longer appends the same bytes twice and
+  produces a file larger than the source
+- **Stream mode could report success with nothing saved** — the destination
+  directory is created before the first byte is written, write/flush failures
+  are propagated instead of swallowed, and a stream download without an output
+  file now ends in `error` rather than `completed`
+- **Failed downloads lost their partial data at startup** — startup cleanup
+  only removes temp data for completed downloads; a download that exhausted
+  its retries stays resumable
+- **"Remove unfinished data" left stream-mode partial files behind** — the
+  half-written output file is removed with the rest of the unfinished data
+  (completed files are never touched)
+- Regression tests for all four: paused-read stall recovery, stream destination
+  creation/failure, failure-partial preservation, and stream partial cleanup
+
 ### Changed
 - Settings tabs replaced with a sidebar + card layout consistent with the
   main window

@@ -131,6 +131,13 @@ class _IsolateDownloadEngine {
       // file is openable (playable) while the download is still running.
       final outputPath = p.join(config.savePath, fileName);
 
+      // Stream mode bypasses assembly/finalization, which are the steps that
+      // normally create the destination. Without this the write fails and the
+      // download is reported as completed with nothing on disk.
+      if (config.streamMode) {
+        await Directory(p.dirname(outputPath)).create(recursive: true);
+      }
+
       // Phase 2: Create or restore segments
       _segments = _createOrRestoreSegments();
       _sendLog('Segments: ${_segments.length} (range=$_supportsRange, threads=${config.threadCount}${config.streamMode ? ', stream mode' : ''})');
@@ -148,6 +155,13 @@ class _IsolateDownloadEngine {
       // Phase 6: Assemble (stream mode writes directly to the output file,
       // so there is nothing to assemble or move)
       if (config.streamMode) {
+        // Never report success for a file that is not on disk.
+        if (!await File(outputPath).exists()) {
+          throw FileSystemException(
+            'Stream download finished but the output file does not exist',
+            outputPath,
+          );
+        }
         _sendLog('Stream download finished: $outputPath');
       } else if (_segments.length > 1) {
         _sendStatus('assembling');

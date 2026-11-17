@@ -26,6 +26,19 @@ class StallException implements Exception {
       'StallException: no data received for ${idleFor.inSeconds}s';
 }
 
+/// Thrown when received bytes could not be committed to disk (full disk,
+/// revoked permissions, missing directory).
+///
+/// Never retried: re-requesting the same bytes cannot fix the filesystem, and
+/// the segment must not be reported as completed when nothing was written.
+class WriteException implements Exception {
+  final Object cause;
+  const WriteException(this.cause);
+
+  @override
+  String toString() => 'WriteException: failed to write data ($cause)';
+}
+
 class ConnectionPool {
   final String url;
   final Map<String, String> headers;
@@ -135,9 +148,14 @@ class ConnectionPool {
       } on DioException catch (e) {
         if (_isCancelled || e.type == DioExceptionType.cancel) return;
 
-        // Pause requested while the request was in flight — wait, then retry
-        // from the current temp file offset without counting a retry.
-        if (_isPaused) continue;
+        // Pause requested while the request was in flight — recover the real
+        // on-disk offset, then retry from there without counting a retry.
+        // Skipping the recovery would re-request bytes that are already in
+        // the temp file and append them a second time (corrupted output).
+        if (_isPaused) {
+          currentTask = await _recoverTask(currentTask);
+          continue;
+        }
 
         currentTask = await _recoverTask(currentTask);
         retries = _nextRetryCount(retries, bytesBeforeAttempt, currentTask);
@@ -153,7 +171,22 @@ class ConnectionPool {
       } catch (e) {
         // StallException and other non-Dio errors: recoverable, keep going.
         if (_isCancelled) return;
-        if (_isPaused) continue;
+
+        // A failed disk write will fail again on every retry — report it.
+        if (e is WriteException) {
+          if (index < _statuses.length) {
+            _statuses[index] = ConnectionStatus.error;
+          }
+          onStatusChange?.call(index, ConnectionStatus.error, e.toString());
+          return;
+        }
+
+        // Same pause path as above: the bytes written before the failure are
+        // on disk, so the retry must resume from the real file length.
+        if (_isPaused) {
+          currentTask = await _recoverTask(currentTask);
+          continue;
+        }
 
         currentTask = await _recoverTask(currentTask);
         retries = _nextRetryCount(retries, bytesBeforeAttempt, currentTask);
@@ -316,13 +349,26 @@ class ConnectionPool {
         throw StallException(const Duration(seconds: 0));
       }
     } finally {
+      // Closing must not swallow I/O errors: a segment whose bytes never
+      // reached the disk would otherwise be reported as completed while the
+      // output file is empty or truncated.
+      Object? writeError;
       try {
         await sink.flush();
+      } catch (e) {
+        writeError = e;
+      }
+      try {
         await sink.close();
-      } catch (_) {}
+      } catch (e) {
+        writeError ??= e;
+      }
       try {
         await iterator.cancel();
       } catch (_) {}
+      if (writeError != null) {
+        throw WriteException(writeError);
+      }
     }
   }
 
