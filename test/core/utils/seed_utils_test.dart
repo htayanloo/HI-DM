@@ -94,8 +94,8 @@ void main() {
   });
 
   group('AppSettings new keys', () {
-    test('queue_order defaults to fifo', () {
-      expect(AppSettings.defaults[AppSettings.queueOrder], 'fifo');
+    test('queue_order defaults to newest first', () {
+      expect(AppSettings.defaults[AppSettings.queueOrder], 'lifo');
     });
 
     test('save_path_customized defaults to false', () {

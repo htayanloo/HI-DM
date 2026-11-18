@@ -19,6 +19,7 @@ import '../../providers/settings_providers.dart';
 import '../../widgets/custom_title_bar.dart';
 import '../../widgets/download_settings_dialog.dart';
 import '../../widgets/download_tile.dart';
+import '../../widgets/selectable_download_list.dart';
 import '../add_download/add_url_dialog.dart';
 import '../add_download/batch_download_dialog.dart';
 import '../add_download/import_list_dialog.dart';
@@ -783,9 +784,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
         final selectedIds = ref.watch(selectedDownloadIdsProvider);
 
-        return ListView.builder(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          itemCount: list.length,
+        return SelectableDownloadList(
+          itemIds: list.map((item) => item.id).toList(),
+          selectedIds: selectedIds,
+          onSelectionChanged: (ids) =>
+              ref.read(selectedDownloadIdsProvider.notifier).state = ids,
           itemBuilder: (context, index) {
             final item = list[index];
             return DownloadTile(

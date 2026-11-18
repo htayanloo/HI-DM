@@ -46,7 +46,29 @@ Future<void> _finish(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('toolbar has a sort control and defaults to oldest first',
+  test('a newly added download appears first without changing the source list', () async {
+    final source = StreamController<List<DownloadItem>>();
+    final container = ProviderContainer(overrides: [
+      allDownloadsProvider.overrideWith((ref) => source.stream),
+    ]);
+    final subscription = container.listen(filteredDownloadsProvider, (_, _) {});
+    addTearDown(() async {
+      subscription.close();
+      container.dispose();
+      await source.close();
+    });
+    final old = _item('old.bin', added: DateTime(2026, 1, 1));
+    source.add([old]);
+    await Future<void>.delayed(Duration.zero);
+    final input = [old, _item('new.bin', added: DateTime(2026, 6, 1))];
+    source.add(input);
+    await Future<void>.delayed(Duration.zero);
+    expect(container.read(filteredDownloadsProvider).requireValue.map((d) => d.fileName),
+        ['new.bin', 'old.bin']);
+    expect(input.map((d) => d.fileName), ['old.bin', 'new.bin']);
+  });
+
+  testWidgets('toolbar has a sort control and defaults to newest first',
       (WidgetTester tester) async {
     final original = ErrorWidget.builder;
     tester.view.physicalSize = const Size(1280, 800);
@@ -54,6 +76,7 @@ void main() {
     addTearDown(tester.view.reset);
 
     final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
     await SettingsRepository(db)
         .setBoolValue(AppSettings.clipboardMonitoring, false);
 
@@ -72,14 +95,14 @@ void main() {
     // The sort control is present in the toolbar and reports the active
     // order via its tooltip.
     expect(find.byIcon(Icons.sort_rounded), findsOneWidget);
-    expect(find.byTooltip('Sort: Oldest first'), findsOneWidget);
+    expect(find.byTooltip('Sort: Newest first'), findsOneWidget);
 
-    // Default order: oldest added first.
+    // Default order: newest added first.
     final order = tester
         .widgetList<DownloadTile>(find.byType(DownloadTile))
         .map((t) => t.item.fileName)
         .toList();
-    expect(order, ['old.bin', 'new.bin']);
+    expect(order, ['new.bin', 'old.bin']);
 
     ErrorWidget.builder = original;
     await _finish(tester);
@@ -93,6 +116,7 @@ void main() {
     addTearDown(tester.view.reset);
 
     final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
     await SettingsRepository(db)
         .setBoolValue(AppSettings.clipboardMonitoring, false);
 
@@ -113,16 +137,16 @@ void main() {
         .map((t) => t.item.fileName)
         .toList();
 
-    expect(order(), ['small.bin', 'big.bin']); // oldest first
+    expect(order(), ['big.bin', 'small.bin']); // newest first
 
     await tester.tap(find.byIcon(Icons.sort_rounded));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Largest first'));
+    await tester.tap(find.widgetWithText(CheckedPopupMenuItem<String>, 'Smallest first'));
     await tester.pumpAndSettle();
 
-    expect(order(), ['big.bin', 'small.bin'],
+    expect(order(), ['small.bin', 'big.bin'],
         reason: 'the sort menu must reorder the list');
-    expect(find.byTooltip('Sort: Largest first'), findsOneWidget,
+    expect(find.byTooltip('Sort: Smallest first'), findsOneWidget,
         reason: 'the button must show the active order');
 
     ErrorWidget.builder = original;
@@ -137,6 +161,7 @@ void main() {
     addTearDown(tester.view.reset);
 
     final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
     await SettingsRepository(db)
         .setBoolValue(AppSettings.clipboardMonitoring, false);
 
@@ -154,19 +179,19 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.sort_rounded));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Newest first'));
+    await tester.tap(find.widgetWithText(CheckedPopupMenuItem<String>, 'Oldest first'));
     await tester.pumpAndSettle();
 
     // The provider reflects the choice immediately...
     final container = ProviderScope.containerOf(
       tester.element(find.byType(HomeScreen)),
     );
-    expect(container.read(sortOrderProvider), 'lifo');
+    expect(container.read(sortOrderProvider), 'fifo');
 
     // ...and it was written to settings so it survives a relaunch.
     final saved =
         await SettingsRepository(db).getValue(AppSettings.listSortOrder);
-    expect(saved, 'lifo');
+    expect(saved, 'fifo');
 
     ErrorWidget.builder = original;
     await _finish(tester);

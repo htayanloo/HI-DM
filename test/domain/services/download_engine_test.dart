@@ -5,6 +5,7 @@ import 'dart:isolate';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_dm/domain/services/download_engine.dart';
 import 'package:flutter_dm/domain/services/download_message.dart';
+import 'package:flutter_dm/domain/services/file_assembler.dart';
 
 /// End-to-end test of the download isolate against a local HTTP server:
 /// analyze → segments → download → assemble → completed.
@@ -85,11 +86,17 @@ void main() {
       }
     });
 
-    await Isolate.spawn(downloadIsolateEntry, [mainPort.sendPort, config.toMap()]);
-    // Timeout so a hung engine fails the test instead of hanging it.
-    await done.future.timeout(const Duration(seconds: 60));
-    mainPort.close();
-    return events;
+    final isolate = await Isolate.spawn(
+      downloadIsolateEntry, [mainPort.sendPort, config.toMap()],
+    );
+    try {
+      // Timeout so a hung engine fails the test instead of hanging it.
+      await done.future.timeout(const Duration(seconds: 60));
+      return events;
+    } finally {
+      isolate.kill(priority: Isolate.immediate);
+      mainPort.close();
+    }
   }
 
   test('multi-segment download assembles the complete file', () async {
@@ -172,6 +179,48 @@ void main() {
     expect(types, contains('completed'), reason: 'events: $types');
     expect(target.readAsBytesSync(), equals(body));
   });
+
+  for (final streamMode in [true, false]) {
+    test('write failure at full progress fails the download '
+        '(streamMode=$streamMode)', () async {
+      final partialPath = streamMode
+          ? '${saveDir.path}/movie.bin'
+          : FileAssembler(tempDirectory: tempDir.path, downloadId: 6)
+              .getTempFilePath(0);
+      final partial = File(partialPath);
+      await partial.writeAsBytes(body.sublist(0, 100));
+      final chmod = await Process.run('chmod', ['444', partialPath]);
+      expect(chmod.exitCode, 0);
+
+      try {
+        final events = await runDownload(DownloadIsolateConfig(
+          downloadId: 6,
+          url: 'http://127.0.0.1:${server.port}/movie.bin',
+          savePath: saveDir.path,
+          fileName: 'movie.bin',
+          tempDirectory: tempDir.path,
+          threadCount: 1,
+          streamMode: streamMode,
+          existingDownloadedBytes: 100,
+          connectionTimeoutSeconds: 5,
+          maxRetries: 0,
+          retryDelaySeconds: 0,
+        ));
+        final types = events.map((e) => e['type']).toSet();
+
+        // Network progress reaches 100%, but the bytes never reach disk.
+        expect(events.any((e) => e['type'] == 'progress' &&
+            (e['data'] as Map)['downloadedBytes'] == bodySize), isTrue);
+        expect(types, contains('error'));
+        expect(types, isNot(contains('completed')));
+        expect(events.where((e) => e['type'] == 'error').single.toString(),
+            contains('WriteException'));
+        expect(await partial.readAsBytes(), body.sublist(0, 100));
+      } finally {
+        await Process.run('chmod', ['644', partialPath]);
+      }
+    }, skip: Platform.isWindows ? 'Requires POSIX file permissions' : false);
+  }
 
   test('stream mode creates a missing nested save directory', () async {
     servedName = 'nested.bin';

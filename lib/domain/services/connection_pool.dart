@@ -298,6 +298,20 @@ class ConnectionPool {
     final sink = tempFile.openWrite(
       mode: alreadyDownloaded > 0 ? FileMode.append : FileMode.write,
     );
+    // Opening/writing can fail before the network stream finishes. Observe
+    // done immediately so an asynchronous sink error cannot kill the isolate
+    // before flush/close get a chance to propagate it.
+    Object? sinkError;
+    final sinkDone = sink.done.then<Object?>(
+      (_) => null,
+      onError: (Object error) {
+        sinkError = error;
+        return error;
+      },
+    );
+    // Attach the file consumer to its opening future before awaiting the
+    // first network chunk, including when the destination cannot be opened.
+    sink.add(const <int>[]);
     var downloaded = alreadyDownloaded;
     final totalSegmentBytes = task.endByte >= 0 ? task.endByte - task.startByte + 1 : -1;
     var lastDataAt = DateTime.now();
@@ -352,9 +366,11 @@ class ConnectionPool {
       // Closing must not swallow I/O errors: a segment whose bytes never
       // reached the disk would otherwise be reported as completed while the
       // output file is empty or truncated.
-      Object? writeError;
+      Object? writeError = sinkError;
       try {
-        await sink.flush();
+        // A failed sink no longer consumes its stream; flushing it again
+        // can wait forever for that abandoned buffer.
+        if (writeError == null) await sink.flush();
       } catch (e) {
         writeError = e;
       }
@@ -363,6 +379,7 @@ class ConnectionPool {
       } catch (e) {
         writeError ??= e;
       }
+      writeError ??= await sinkDone;
       try {
         await iterator.cancel();
       } catch (_) {}

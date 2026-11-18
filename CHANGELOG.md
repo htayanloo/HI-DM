@@ -58,6 +58,13 @@ All notable changes to HI-DM will be documented in this file.
   orphans cleaned at startup)
 
 ### Fixed in review follow-up
+- Disk-write errors now fail the entire download even after network progress
+  reaches 100%; asynchronous file-open errors cannot kill the worker or leave
+  it waiting on a failed file sink.
+- New downloads appear first in the list and queue by default; saved ordering
+  preferences are preserved, with newer IDs breaking timestamp ties.
+- Download selection now includes Select all, Clear selection, Ctrl/Cmd+A,
+  Escape, and mouse drag selection within the filtered list.
 - **Paused retry re-requested bytes that were already on disk** — a pause that
   lands while a read is outstanding now re-reads the real temp-file length
   before the retry, so resuming no longer appends the same bytes twice and

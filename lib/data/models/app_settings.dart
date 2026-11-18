@@ -65,7 +65,7 @@ class AppSettings {
     globalProxyEnabled: 'false',
     globalProxyConfig: '',
     savePathCustomized: 'false',
-    queueOrder: 'fifo',
-    listSortOrder: 'fifo',
+    queueOrder: 'lifo',
+    listSortOrder: 'lifo',
   };
 }

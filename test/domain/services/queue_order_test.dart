@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_dm/data/models/download_item.dart';
+import 'package:flutter_dm/data/models/app_settings.dart';
 import 'package:flutter_dm/domain/services/download_manager.dart';
 
 DownloadItem _item(String name, DateTime added, {int totalSize = 0}) {
@@ -25,7 +26,7 @@ void main() {
           _item('third.zip', t2, totalSize: 200),
         ];
 
-    test('fifo (default) orders oldest first', () {
+    test('fifo orders oldest first when explicitly selected', () {
       final list = base();
       sortQueueBy(list, 'fifo');
       expect(list.map((e) => e.fileName), ['first.zip', 'second.zip', 'third.zip']);
@@ -41,6 +42,23 @@ void main() {
       final list = base();
       sortQueueBy(list, 'lifo');
       expect(list.map((e) => e.fileName), ['third.zip', 'second.zip', 'first.zip']);
+    });
+
+    test('new downloads lead the queue and list by default', () {
+      expect(AppSettings.defaults[AppSettings.queueOrder], 'lifo');
+      expect(AppSettings.defaults[AppSettings.listSortOrder], 'lifo');
+      final list = base();
+      sortQueueBy(list, AppSettings.defaults[AppSettings.queueOrder]!);
+      expect(list.first.fileName, 'third.zip');
+    });
+
+    test('newest ID wins when downloads have the same timestamp', () {
+      final list = [
+        _item('old.zip', t0).copyWith(id: 1),
+        _item('new.zip', t0).copyWith(id: 2),
+      ];
+      sortQueueBy(list, 'lifo');
+      expect(list.map((item) => item.id), [2, 1]);
     });
 
     test('largest orders by size descending', () {

@@ -51,6 +51,7 @@ class _IsolateDownloadEngine {
   late final SpeedLimiter _speedLimiter;
   late final ProxyConfig? _proxyConfig;
   ConnectionPool? _connectionPool;
+  String? _segmentError;
 
   // Speed tracking
   final List<_SpeedSample> _speedSamples = [];
@@ -333,6 +334,13 @@ class _IsolateDownloadEngine {
 
     await _connectionPool!.downloadAll(tasks);
 
+    // Progress counts received bytes, which may still be buffered in the
+    // file sink. A failed flush must prevent completion even at 100% progress
+    // or when the server did not advertise a content length.
+    if (_segmentError != null) {
+      throw StateError(_segmentError!);
+    }
+
     // A segment that gave up leaves the download incomplete — surface a
     // retryable error instead of assembling a corrupted file.
     final incomplete = _segmentProgress.entries.any((entry) {
@@ -380,8 +388,9 @@ class _IsolateDownloadEngine {
       _sendLog('Segment $segmentIndex completed');
     }
 
-    if (status == ConnectionStatus.error && errorMessage != null) {
-      _sendLog('Segment $segmentIndex error: $errorMessage');
+    if (status == ConnectionStatus.error) {
+      _segmentError ??= errorMessage ?? 'Segment $segmentIndex failed';
+      _sendLog('Segment $segmentIndex error: $_segmentError');
     }
   }
 

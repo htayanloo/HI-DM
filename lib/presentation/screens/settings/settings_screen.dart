@@ -368,7 +368,7 @@ class _GeneralTab extends ConsumerWidget {
               title: const Text('Queue order'),
               subtitle: const Text('Order in which queued downloads start'),
               trailing: DropdownButton<String>(
-                value: map[AppSettings.queueOrder] ?? 'fifo',
+                value: map[AppSettings.queueOrder] ?? 'lifo',
                 items: const [
                   DropdownMenuItem(value: 'fifo', child: Text('Oldest first')),
                   DropdownMenuItem(value: 'lifo', child: Text('Newest first')),

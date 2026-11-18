@@ -56,7 +56,7 @@ class DownloadManager {
   String? _tempDirectory;
   bool _initialized = false;
   bool _shuttingDown = false;
-  String _queueOrder = 'fifo';
+  String _queueOrder = 'lifo';
 
   // Throttled DB writes to prevent SQLite concurrent access crash
   final Map<int, _PendingDbUpdate> _pendingUpdates = {};
@@ -93,7 +93,7 @@ class DownloadManager {
     if (_maxConcurrent <= 0) _maxConcurrent = AppConstants.defaultMaxConcurrentDownloads;
 
     _queueOrder = await _settingsRepo.getValue(AppSettings.queueOrder);
-    if (_queueOrder.isEmpty) _queueOrder = 'fifo';
+    if (_queueOrder.isEmpty) _queueOrder = 'lifo';
 
     // path_provider can fail on unusual setups — fall back to the system temp
     // dir rather than leaving the manager unable to start.
@@ -817,12 +817,15 @@ bool isInterruptedStatus(String status) {
 
 /// Sorts queued downloads in place according to the user's chosen order.
 ///
-/// Orders: `fifo` (oldest first, default), `lifo` (newest first),
+/// Orders: `fifo` (oldest first), `lifo` (newest first, default),
 /// `largest`, `smallest`, `name` (A–Z).
 void sortQueueBy(List<model.DownloadItem> queued, String order) {
   switch (order) {
     case 'lifo': // Newest first
-      queued.sort((a, b) => b.dateAdded.compareTo(a.dateAdded));
+      queued.sort((a, b) {
+        final byDate = b.dateAdded.compareTo(a.dateAdded);
+        return byDate != 0 ? byDate : (b.id ?? 0).compareTo(a.id ?? 0);
+      });
     case 'largest': // Biggest file first
       queued.sort((a, b) => b.totalSize.compareTo(a.totalSize));
     case 'smallest': // Smallest file first

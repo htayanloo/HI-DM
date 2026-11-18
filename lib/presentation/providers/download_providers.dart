@@ -69,11 +69,11 @@ final selectedStatusFilterProvider = StateProvider<String?>((ref) => null);
 final searchQueryProvider = StateProvider<String>((ref) => '');
 
 /// Display order of the download list — changed from the toolbar's sort
-/// button. Defaults to oldest-first (the historical behavior).
+/// button. New downloads appear first by default.
 ///
 /// Keys match [sortQueueBy] so the same option set drives the list display
 /// and the queue processing order.
-final sortOrderProvider = StateProvider<String>((ref) => 'fifo');
+final sortOrderProvider = StateProvider<String>((ref) => 'lifo');
 
 // Filtered + sorted downloads
 final filteredDownloadsProvider = Provider<AsyncValue<List<model.DownloadItem>>>((ref) {
