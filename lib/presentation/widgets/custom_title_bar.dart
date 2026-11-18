@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../../platform/desktop/window_config.dart';
+
 /// Custom title bar with HI-DM branding — replaces system titlebar.
 class CustomTitleBar extends StatelessWidget {
   final Widget? trailing;
@@ -88,7 +90,7 @@ class CustomTitleBar extends StatelessWidget {
             const Spacer(),
 
             // Trailing content (optional — for extra buttons)
-            if (trailing != null) trailing!,
+            ?trailing,
 
             // Window controls (Windows/Linux only)
             if (Platform.isWindows || Platform.isLinux) ...[
@@ -110,7 +112,10 @@ class CustomTitleBar extends StatelessWidget {
               ),
               _WindowButton(
                 icon: Icons.close_rounded,
-                onPressed: () => windowManager.close(),
+                // Routes through WindowConfig so the app shuts down cleanly
+                // (flush state, kill isolates, exit) instead of leaving a
+                // background process behind.
+                onPressed: () => WindowConfig.close(),
                 hoverColor: const Color(0xFFE53935),
                 hoverIconColor: Colors.white,
               ),

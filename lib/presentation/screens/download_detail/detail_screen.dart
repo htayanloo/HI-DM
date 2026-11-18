@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/utils/open_utils.dart';
 import '../../../core/utils/size_formatter.dart';
 import '../../../core/utils/speed_formatter.dart';
 import '../../../data/models/download_item.dart';
@@ -124,6 +125,23 @@ class _DownloadDetailScreenState extends ConsumerState<DownloadDetailScreen>
           ],
         ),
         actions: [
+          if (item.status == 'completed' || (item.streamMode && item.isActive))
+            IconButton(
+              icon: const Icon(Icons.open_in_new),
+              tooltip: item.status == 'completed' ? 'Open file' : 'Open file (partial)',
+              onPressed: () async {
+                final path = '${item.savePath}/${item.fileName}';
+                final ok = await OpenUtils.openFile(path);
+                if (!ok && context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('File not found: ${item.fileName}'),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                }
+              },
+            ),
           if (item.status == 'paused' || item.status == 'error' || item.status == 'queued')
             IconButton(
               icon: const Icon(Icons.play_arrow),

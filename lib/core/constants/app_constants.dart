@@ -1,6 +1,9 @@
 class AppConstants {
   static const String appName = 'HI-DM';
-  static const String appVersion = '1.4.1';
+
+  /// Fallback only — the About screen reads the real version from
+  /// PackageInfo (pubspec.yaml) so it can never drift out of sync again.
+  static const String appVersion = '1.5.1';
 
   // Download defaults
   static const int defaultThreadCount = 8;

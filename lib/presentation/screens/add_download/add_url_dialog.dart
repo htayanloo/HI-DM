@@ -36,6 +36,7 @@ class _AddUrlDialogState extends ConsumerState<AddUrlDialog> {
 
   int _threadCount = AppConstants.defaultThreadCount;
   bool _startImmediately = true;
+  bool _streamMode = false;
   bool _showAdvanced = false;
   bool _isAnalyzing = false;
   String? _selectedCategory;
@@ -171,6 +172,16 @@ class _AddUrlDialogState extends ConsumerState<AddUrlDialog> {
       setState(() {
         _savePathController.text = result;
       });
+      // Remember the user's choice across app restarts — this was the bug
+      // where a newly picked path silently reverted to the default.
+      try {
+        final repo = ref.read(settingsRepositoryProvider);
+        await repo.setValue(AppSettings.defaultSavePath, result);
+        await repo.setBoolValue(AppSettings.savePathCustomized, true);
+        ref.invalidate(allSettingsProvider);
+      } catch (e) {
+        debugPrint('[AddDialog] Failed to persist save path: $e');
+      }
     }
   }
 
@@ -212,6 +223,7 @@ class _AddUrlDialogState extends ConsumerState<AddUrlDialog> {
         headers: headers,
         queueId: _selectedQueueId,
         startImmediately: _startImmediately,
+        streamMode: _streamMode,
       );
       debugPrint('[AddDialog] Download added with id=$id');
       if (mounted) Navigator.of(context).pop(true);
@@ -496,6 +508,48 @@ class _AddUrlDialogState extends ConsumerState<AddUrlDialog> {
                                 'Download will be queued and start when you resume it',
                                 style: TextStyle(fontSize: 11, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.6)),
                               ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Watch-while-downloading (stream) toggle
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  child: Row(
+                    children: [
+                      Switch(
+                        value: _streamMode,
+                        onChanged: (v) => setState(() {
+                          _streamMode = v;
+                          if (v) _threadCount = 1;
+                        }),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.play_circle_outline_rounded,
+                                    size: 15,
+                                    color: _streamMode
+                                        ? theme.colorScheme.primary
+                                        : theme.colorScheme.onSurfaceVariant),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Download & watch (stream)',
+                                  style: TextStyle(fontSize: 13, color: theme.colorScheme.onSurface),
+                                ),
+                              ],
+                            ),
+                            Text(
+                              'Downloads in order, straight to the final file — open it while downloading to start watching',
+                              style: TextStyle(fontSize: 11, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.6)),
+                            ),
                           ],
                         ),
                       ),

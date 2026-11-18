@@ -15,6 +15,30 @@ enum ConnectionStatus { idle, downloading, completed, error, paused }
 typedef SegmentProgressCallback = void Function(int segmentIndex, int bytesDownloaded, int totalSegmentBytes);
 typedef SegmentStatusCallback = void Function(int segmentIndex, ConnectionStatus status, String? errorMessage);
 
+/// Thrown when a connection stops delivering data for too long
+/// (network drop, laptop sleep, server hang). Always retryable.
+class StallException implements Exception {
+  final Duration idleFor;
+  const StallException(this.idleFor);
+
+  @override
+  String toString() =>
+      'StallException: no data received for ${idleFor.inSeconds}s';
+}
+
+/// Thrown when received bytes could not be committed to disk (full disk,
+/// revoked permissions, missing directory).
+///
+/// Never retried: re-requesting the same bytes cannot fix the filesystem, and
+/// the segment must not be reported as completed when nothing was written.
+class WriteException implements Exception {
+  final Object cause;
+  const WriteException(this.cause);
+
+  @override
+  String toString() => 'WriteException: failed to write data ($cause)';
+}
+
 class ConnectionPool {
   final String url;
   final Map<String, String> headers;
@@ -27,12 +51,16 @@ class ConnectionPool {
   final SegmentProgressCallback? onProgress;
   final SegmentStatusCallback? onStatusChange;
 
+  /// Seconds without a single byte before a live connection is considered
+  /// stalled and forcibly retried. Keeps downloads alive across network
+  /// drops and laptop sleep instead of hanging forever.
+  final int stallTimeoutSeconds;
+
   final List<Dio> _clients = [];
   final List<CancelToken> _cancelTokens = [];
   final List<ConnectionStatus> _statuses = [];
   bool _isPaused = false;
   bool _isCancelled = false;
-  final List<Completer<void>?> _pauseCompleters = [];
 
   ConnectionPool({
     required this.url,
@@ -45,6 +73,7 @@ class ConnectionPool {
     this.proxyConfig,
     this.onProgress,
     this.onStatusChange,
+    this.stallTimeoutSeconds = 30,
   });
 
   Future<void> downloadAll(Map<int, SegmentTask> segments) async {
@@ -55,14 +84,12 @@ class ConnectionPool {
     _clients.clear();
     _cancelTokens.clear();
     _statuses.clear();
-    _pauseCompleters.clear();
 
     final maxIndex = segments.keys.reduce((a, b) => a > b ? a : b) + 1;
     for (var i = 0; i < maxIndex; i++) {
       _clients.add(_createDio());
       _cancelTokens.add(CancelToken());
       _statuses.add(ConnectionStatus.idle);
-      _pauseCompleters.add(null);
     }
 
     final futures = segments.entries.map(
@@ -92,6 +119,19 @@ class ConnectionPool {
     while (retries <= maxRetries) {
       if (_isCancelled) return;
 
+      // Wait out an explicit pause before every attempt so a download that
+      // stalled while paused doesn't burn retries in the background.
+      if (_isPaused) {
+        if (index < _statuses.length) {
+          _statuses[index] = ConnectionStatus.paused;
+        }
+        onStatusChange?.call(index, ConnectionStatus.paused, null);
+        await _awaitResume(index);
+        if (_isCancelled) return;
+      }
+
+      final bytesBeforeAttempt = await _tempFileLength(currentTask);
+
       try {
         if (index < _statuses.length) {
           _statuses[index] = ConnectionStatus.downloading;
@@ -108,7 +148,17 @@ class ConnectionPool {
       } on DioException catch (e) {
         if (_isCancelled || e.type == DioExceptionType.cancel) return;
 
-        retries++;
+        // Pause requested while the request was in flight — recover the real
+        // on-disk offset, then retry from there without counting a retry.
+        // Skipping the recovery would re-request bytes that are already in
+        // the temp file and append them a second time (corrupted output).
+        if (_isPaused) {
+          currentTask = await _recoverTask(currentTask);
+          continue;
+        }
+
+        currentTask = await _recoverTask(currentTask);
+        retries = _nextRetryCount(retries, bytesBeforeAttempt, currentTask);
         if (retries > maxRetries) {
           if (index < _statuses.length) {
             _statuses[index] = ConnectionStatus.error;
@@ -117,33 +167,95 @@ class ConnectionPool {
           return; // Don't rethrow — let other segments continue
         }
 
-        // Recalculate from temp file
-        try {
-          final tempFile = File(currentTask.tempFilePath);
-          if (await tempFile.exists()) {
-            currentTask = currentTask.copyWith(alreadyDownloaded: await tempFile.length());
-          }
-        } catch (_) {}
-
-        final delay = retryDelaySeconds * retries;
-        await Future<void>.delayed(Duration(seconds: delay));
+        await _backoff(retries, index);
       } catch (e) {
-        // Non-Dio errors
-        retries++;
-        if (retries > maxRetries) {
+        // StallException and other non-Dio errors: recoverable, keep going.
+        if (_isCancelled) return;
+
+        // A failed disk write will fail again on every retry — report it.
+        if (e is WriteException) {
+          if (index < _statuses.length) {
+            _statuses[index] = ConnectionStatus.error;
+          }
           onStatusChange?.call(index, ConnectionStatus.error, e.toString());
           return;
         }
-        await Future<void>.delayed(Duration(seconds: retryDelaySeconds * retries));
+
+        // Same pause path as above: the bytes written before the failure are
+        // on disk, so the retry must resume from the real file length.
+        if (_isPaused) {
+          currentTask = await _recoverTask(currentTask);
+          continue;
+        }
+
+        currentTask = await _recoverTask(currentTask);
+        retries = _nextRetryCount(retries, bytesBeforeAttempt, currentTask);
+        if (retries > maxRetries) {
+          if (index < _statuses.length) {
+            _statuses[index] = ConnectionStatus.error;
+          }
+          onStatusChange?.call(index, ConnectionStatus.error, e.toString());
+          return;
+        }
+
+        await _backoff(retries, index);
       }
+    }
+  }
+
+  /// Reset the retry counter whenever the attempt actually made progress —
+  /// flaky-but-alive connections keep downloading instead of giving up.
+  int _nextRetryCount(int retries, int bytesBefore, SegmentTask recovered) {
+    if (recovered.alreadyDownloaded > bytesBefore) return 1;
+    return retries + 1;
+  }
+
+  /// Re-read the temp file so the next attempt resumes from real bytes on
+  /// disk (this is what makes recovery after sleep/network loss correct).
+  Future<SegmentTask> _recoverTask(SegmentTask task) async {
+    try {
+      final tempFile = File(task.tempFilePath);
+      if (await tempFile.exists()) {
+        return task.copyWith(alreadyDownloaded: await tempFile.length());
+      }
+    } catch (_) {}
+    return task;
+  }
+
+  Future<int> _tempFileLength(SegmentTask task) async {
+    try {
+      final tempFile = File(task.tempFilePath);
+      if (await tempFile.exists()) return tempFile.lengthSync();
+    } catch (_) {}
+    return 0;
+  }
+
+  /// Sleep between retries, waking early on pause/cancel so the UI stays
+  /// responsive while a download is waiting out a network outage.
+  Future<void> _backoff(int retries, int index) async {
+    final delay = Duration(seconds: retryDelaySeconds * retries);
+    final deadline = DateTime.now().add(delay);
+    while (DateTime.now().isBefore(deadline)) {
+      if (_isCancelled || _isPaused) return;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+  }
+
+  Future<void> _awaitResume(int index) async {
+    // Polling keeps pause/resume race-free across the segment workers.
+    while (_isPaused && !_isCancelled) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
     }
   }
 
   Future<void> _doDownload(int index, SegmentTask task) async {
     if (index >= _clients.length || index >= _cancelTokens.length) return;
 
+    // Fresh token per attempt — a previous stall/pause may have consumed it.
+    final cancelToken = CancelToken();
+    _cancelTokens[index] = cancelToken;
+
     final dio = _clients[index];
-    final cancelToken = _cancelTokens[index];
     final requestHeaders = Map<String, String>.from(headers);
 
     final effectiveStart = task.startByte + task.alreadyDownloaded;
@@ -170,30 +282,70 @@ class ConnectionPool {
 
     if (response.data == null) return; // Safety: no response body
 
+    // Server ignored our Range header — restart this attempt's file from 0
+    // instead of appending a full body to a partial file (corruption).
+    var alreadyDownloaded = task.alreadyDownloaded;
+    final serverSentRange = response.statusCode == 206;
+    if (alreadyDownloaded > 0 && !serverSentRange) {
+      alreadyDownloaded = 0;
+      try {
+        final f = File(task.tempFilePath);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
+
     final tempFile = File(task.tempFilePath);
     final sink = tempFile.openWrite(
-      mode: task.alreadyDownloaded > 0 ? FileMode.append : FileMode.write,
+      mode: alreadyDownloaded > 0 ? FileMode.append : FileMode.write,
     );
-    var downloaded = task.alreadyDownloaded;
+    // Opening/writing can fail before the network stream finishes. Observe
+    // done immediately so an asynchronous sink error cannot kill the isolate
+    // before flush/close get a chance to propagate it.
+    Object? sinkError;
+    final sinkDone = sink.done.then<Object?>(
+      (_) => null,
+      onError: (Object error) {
+        sinkError = error;
+        return error;
+      },
+    );
+    // Attach the file consumer to its opening future before awaiting the
+    // first network chunk, including when the destination cannot be opened.
+    sink.add(const <int>[]);
+    var downloaded = alreadyDownloaded;
     final totalSegmentBytes = task.endByte >= 0 ? task.endByte - task.startByte + 1 : -1;
+    var lastDataAt = DateTime.now();
+    final stallLimit = Duration(seconds: stallTimeoutSeconds);
 
+    final iterator = StreamIterator(response.data!.stream);
     try {
-      await for (final chunk in response.data!.stream) {
+      while (true) {
+        if (_isCancelled) break;
+
         if (_isPaused) {
           if (index < _statuses.length) _statuses[index] = ConnectionStatus.paused;
           onStatusChange?.call(index, ConnectionStatus.paused, null);
 
-          final completer = Completer<void>();
-          if (index < _pauseCompleters.length) _pauseCompleters[index] = completer;
-          await completer.future;
-          if (index < _pauseCompleters.length) _pauseCompleters[index] = null;
-
+          await _awaitResume(index);
           if (_isCancelled) break;
           if (index < _statuses.length) _statuses[index] = ConnectionStatus.downloading;
           onStatusChange?.call(index, ConnectionStatus.downloading, null);
         }
 
-        if (_isCancelled) break;
+        bool hasChunk;
+        try {
+          // Stall watchdog: if the wire goes silent (network drop, laptop
+          // sleep), moveNext times out and we retry with a fresh request
+          // instead of hanging forever.
+          hasChunk = await iterator.moveNext().timeout(stallLimit);
+        } on TimeoutException {
+          throw StallException(DateTime.now().difference(lastDataAt));
+        }
+
+        if (!hasChunk) break; // Stream finished
+
+        final chunk = iterator.current;
+        lastDataAt = DateTime.now();
 
         // Speed limiting
         if (speedLimiter != null && speedLimiter!.enabled) {
@@ -204,22 +356,42 @@ class ConnectionPool {
         downloaded += chunk.length;
         onProgress?.call(index, downloaded, totalSegmentBytes);
       }
+
+      // The server closed the connection before delivering the whole
+      // segment — treat it as a retryable failure, not a completion.
+      if (totalSegmentBytes > 0 && downloaded < totalSegmentBytes) {
+        throw StallException(const Duration(seconds: 0));
+      }
     } finally {
+      // Closing must not swallow I/O errors: a segment whose bytes never
+      // reached the disk would otherwise be reported as completed while the
+      // output file is empty or truncated.
+      Object? writeError = sinkError;
       try {
-        await sink.flush();
+        // A failed sink no longer consumes its stream; flushing it again
+        // can wait forever for that abandoned buffer.
+        if (writeError == null) await sink.flush();
+      } catch (e) {
+        writeError = e;
+      }
+      try {
         await sink.close();
+      } catch (e) {
+        writeError ??= e;
+      }
+      writeError ??= await sinkDone;
+      try {
+        await iterator.cancel();
       } catch (_) {}
+      if (writeError != null) {
+        throw WriteException(writeError);
+      }
     }
   }
 
   void pause() => _isPaused = true;
 
-  void resume() {
-    _isPaused = false;
-    for (var i = 0; i < _pauseCompleters.length; i++) {
-      _pauseCompleters[i]?.complete();
-    }
-  }
+  void resume() => _isPaused = false;
 
   void cancel() {
     _isCancelled = true;
@@ -228,9 +400,6 @@ class ConnectionPool {
       try {
         if (!token.isCancelled) token.cancel('Download cancelled');
       } catch (_) {}
-    }
-    for (var i = 0; i < _pauseCompleters.length; i++) {
-      _pauseCompleters[i]?.complete();
     }
   }
 

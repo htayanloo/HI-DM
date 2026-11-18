@@ -155,6 +155,15 @@ class DownloadIsolateConfig {
   final int? existingTotalSize;
   final List<SegmentResumeData>? resumeSegments;
 
+  /// Stream mode: download sequentially, one connection, writing straight to
+  /// the final output file so the user can open/play it while downloading.
+  final bool streamMode;
+
+  /// Bytes already recorded in the database for this download. Used in stream
+  /// mode to decide whether an existing file at the output path is our own
+  /// partial download (resume) or a leftover file (overwrite).
+  final int existingDownloadedBytes;
+
   const DownloadIsolateConfig({
     required this.downloadId,
     required this.url,
@@ -170,6 +179,8 @@ class DownloadIsolateConfig {
     this.retryDelaySeconds = 5,
     this.existingTotalSize,
     this.resumeSegments,
+    this.streamMode = false,
+    this.existingDownloadedBytes = 0,
   });
 
   Map<String, dynamic> toMap() => {
@@ -187,6 +198,8 @@ class DownloadIsolateConfig {
     'retryDelaySeconds': retryDelaySeconds,
     'existingTotalSize': existingTotalSize,
     'resumeSegments': resumeSegments?.map((s) => s.toMap()).toList(),
+    'streamMode': streamMode,
+    'existingDownloadedBytes': existingDownloadedBytes,
   };
 
   factory DownloadIsolateConfig.fromMap(Map<String, dynamic> map) => DownloadIsolateConfig(
@@ -206,6 +219,8 @@ class DownloadIsolateConfig {
     resumeSegments: (map['resumeSegments'] as List<dynamic>?)
         ?.map((s) => SegmentResumeData.fromMap(s as Map<String, dynamic>))
         .toList(),
+    streamMode: map['streamMode'] as bool? ?? false,
+    existingDownloadedBytes: map['existingDownloadedBytes'] as int? ?? 0,
   );
 }
 
