@@ -2,6 +2,14 @@
 
 All notable changes to HI-DM will be documented in this file.
 
+## [1.5.3] - 2026-11-18
+
+### Fixed
+- Render the startup screen before initializing desktop services and the
+  database. Initialization failures now show an error with Retry.
+- Request notification permission after the home screen renders, once per
+  startup. A pending or failed permission request cannot leave a black window.
+
 ## [1.5.2] - 2026-11-18
 
 ### Fixed

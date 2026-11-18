@@ -3,7 +3,7 @@ class AppConstants {
 
   /// Fallback only — the About screen reads the real version from
   /// PackageInfo (pubspec.yaml) so it can never drift out of sync again.
-  static const String appVersion = '1.5.2';
+  static const String appVersion = '1.5.3';
 
   // Download defaults
   static const int defaultThreadCount = 8;

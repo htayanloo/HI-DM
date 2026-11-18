@@ -16,6 +16,7 @@ import 'data/repositories/queue_repository.dart';
 import 'data/repositories/settings_repository.dart';
 import 'domain/services/notification_service.dart';
 import 'presentation/providers/download_providers.dart';
+import 'presentation/widgets/startup_gate.dart';
 
 Future<void> main() async {
   // Global error handlers — app must NEVER crash
@@ -33,32 +34,24 @@ Future<void> main() async {
   await runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
 
-    try {
-      if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
-        await WindowConfig.initialize();
-      }
-    } catch (e) {
-      debugPrint('[HI-DM] Window init error (non-fatal): $e');
-    }
-
-    try {
-      await NotificationService.initialize();
-    } catch (e) {
-      debugPrint('[HI-DM] Notification init error (non-fatal): $e');
-    }
-
     final container = ProviderContainer();
-
-    try {
-      await _seedDefaults(container);
-    } catch (e) {
-      debugPrint('[HI-DM] Seed defaults error (non-fatal): $e');
-    }
-
     runApp(
       UncontrolledProviderScope(
         container: container,
-        child: const HiDMApp(),
+        child: StartupGate(
+          initialize: () async {
+            try {
+              if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+                await WindowConfig.initialize().timeout(const Duration(seconds: 5));
+              }
+            } catch (e) {
+              debugPrint('[HI-DM] Window init error (non-fatal): $e');
+            }
+            await _seedDefaults(container);
+          },
+          initializeNotifications: NotificationService.initialize,
+          child: const HiDMApp(),
+        ),
       ),
     );
   }, (error, stack) {
