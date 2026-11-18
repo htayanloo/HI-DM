@@ -2,6 +2,13 @@
 
 All notable changes to HI-DM will be documented in this file.
 
+## [1.5.2] - 2026-11-18
+
+### Fixed
+- Pin the Linux release builder to Ubuntu 24.04. Ubuntu 26.04's newer
+  appindicator headers turn tray_manager's deprecated API call into a build
+  error, preventing release artifacts from being produced.
+
 ## [1.5.1] - 2026-10-05
 
 ### Added

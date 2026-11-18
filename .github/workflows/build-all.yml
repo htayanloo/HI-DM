@@ -60,7 +60,8 @@ jobs:
           path: HI-DM.dmg
 
   build-linux:
-    runs-on: ubuntu-latest
+    # tray_manager 0.5.x uses an API deprecated by Ubuntu 26.04 headers.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
